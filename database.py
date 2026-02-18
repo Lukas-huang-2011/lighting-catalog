@@ -1,6 +1,4 @@
-"""
-All Supabase database and storage operations.
-"""
+"""All Supabase database and storage operations."""
 
 import io
 import uuid
@@ -17,10 +15,7 @@ def get_client() -> Client:
     )
 
 
-# ── Storage ──────────────────────────────────────────────────────────────────
-
 def _upload_bytes(client: Client, path: str, data: bytes, mime: str) -> str:
-    """Upload bytes to the catalog-files bucket, return public URL."""
     client.storage.from_("catalog-files").upload(
         path, data, {"content-type": mime, "upsert": "true"}
     )
@@ -39,13 +34,9 @@ def upload_image(client: Client, image: Image.Image) -> str:
     return _upload_bytes(client, path, buf.getvalue(), "image/png")
 
 
-# ── PDF records ───────────────────────────────────────────────────────────────
-
 def create_pdf_record(client: Client, name: str, file_url: str, page_count: int) -> str:
     res = client.table("pdfs").insert({
-        "name": name,
-        "file_url": file_url,
-        "page_count": page_count
+        "name": name, "file_url": file_url, "page_count": page_count
     }).execute()
     return res.data[0]["id"]
 
@@ -57,8 +48,6 @@ def list_pdfs(client: Client) -> list:
 def delete_pdf(client: Client, pdf_id: str):
     client.table("pdfs").delete().eq("id", pdf_id).execute()
 
-
-# ── Products ──────────────────────────────────────────────────────────────────
 
 def save_product(client: Client, pdf_id: str, data: dict, page_num: int) -> str:
     res = client.table("products").insert({
@@ -89,41 +78,28 @@ def save_product_image(client: Client, product_id: str, image_url: str,
     }).execute()
 
 
-# ── Search ────────────────────────────────────────────────────────────────────
-
 def search_by_code(client: Client, query: str) -> list:
-    """Search products by code (exact array match or raw_text contains)."""
     query = query.strip().upper()
-
-    # Try exact match in codes array
     res = client.table("products") \
-        .select("*, pdfs(name), product_images(image_url, image_hash, image_description)") \
-        .contains("codes", [query]) \
-        .execute()
-
+        .select("*, pdfs(name), product_images(image_url, image_hash)") \
+        .contains("codes", [query]).execute()
     if res.data:
         return res.data
-
-    # Fallback: partial match anywhere in raw_text
+    # Partial match fallback
     res = client.table("products") \
-        .select("*, pdfs(name), product_images(image_url, image_hash, image_description)") \
-        .ilike("raw_text", f"%{query}%") \
-        .execute()
-
+        .select("*, pdfs(name), product_images(image_url, image_hash)") \
+        .ilike("raw_text", f"%{query}%").execute()
     return res.data
 
 
 def get_all_image_hashes(client: Client) -> list:
-    """Fetch all image hashes + linked product info for similarity search."""
     res = client.table("product_images") \
         .select("id, image_hash, image_url, product_id, products(codes, name, description, color, light_source, price, currency, wattage, dimensions, extra_fields)") \
-        .not_.is_("image_hash", "null") \
-        .execute()
+        .not_.is_("image_hash", "null").execute()
     return res.data
 
 
 def get_products_by_codes(client: Client, codes: list) -> list:
-    """Fetch product details for a list of codes (for pricing page)."""
     results = []
     seen_ids = set()
     for code in codes:
