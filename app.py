@@ -411,17 +411,27 @@ elif page == "🛠️ Debug & Test":
         page_img = pages[page_num]
         st.image(page_img, caption=f"Page {page_num + 1} as seen by AI", use_container_width=True)
 
-        st.info("Sending to Qwen AI…")
+        st.info("Sending to Gemini Flash AI…")
         ai_client = ai.get_client(api_key)
-        try:
-            result = ai.extract_products_from_page(ai_client, page_img, page_num)
-            if result:
-                st.success(f"✅ AI found **{len(result)} product(s)** on this page!")
-                for i, prod in enumerate(result):
-                    with st.expander(f"Product {i+1}: {prod.get('name','?')} — {prod.get('codes',[])}"):
-                        st.json(prod)
-            else:
-                st.error("❌ AI returned 0 products for this page.")
-                st.warning("The AI may be struggling with this page layout. Try a different page number.")
-        except Exception as e:
-            st.error(f"❌ AI call failed: {e}")
+        debug_result = ai.extract_products_debug(ai_client, page_img)
+
+        # Show errors if any
+        if debug_result.get("error"):
+            st.error(f"❌ Primary model error: {debug_result['error']}")
+        if debug_result.get("error_fallback"):
+            st.error(f"❌ Fallback model error: {debug_result['error_fallback']}")
+
+        # Show raw response
+        with st.expander("📄 Raw AI response (click to inspect)"):
+            st.text(debug_result.get("raw_response") or debug_result.get("raw_response_fallback") or "No response received")
+
+        # Show parsed results
+        result = debug_result.get("parsed", [])
+        if result:
+            st.success(f"✅ AI found **{len(result)} product(s)** on this page!")
+            for i, prod in enumerate(result):
+                with st.expander(f"Product {i+1}: {prod.get('name','?')} — {prod.get('codes',[])}"):
+                    st.json(prod)
+        else:
+            st.error("❌ AI returned 0 products for this page.")
+            st.info("Check the raw response above — if it's empty or shows an error, the model call is failing. If it has text but no JSON, the prompt needs adjusting.")
