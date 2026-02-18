@@ -1,6 +1,6 @@
 """
-AI extraction using Qwen vision via OpenRouter.
-Reads PDF pages and extracts product information.
+AI extraction using Google Gemini Flash via OpenRouter.
+Free model, excellent at reading structured PDF tables.
 """
 
 import json
@@ -8,6 +8,11 @@ import base64
 import io
 from PIL import Image
 from openai import OpenAI
+
+# Primary model: Gemini Flash (free, excellent vision)
+# Fallback: Qwen VL (also free tier)
+PRIMARY_MODEL = "google/gemini-2.0-flash-exp:free"
+FALLBACK_MODEL = "qwen/qwen2.5-vl-7b-instruct:free"
 
 
 def get_client(api_key: str) -> OpenAI:
@@ -24,54 +29,48 @@ def image_to_base64(image: Image.Image) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
-def extract_products_from_page(client: OpenAI, page_image: Image.Image, page_num: int) -> list:
-    """
-    Send a rendered PDF page to Qwen and extract all product rows from it.
-    Returns a list of dicts — one dict per product CODE (article number).
-    """
-    img_b64 = image_to_base64(page_image)
+def _parse_json_response(content: str) -> list:
+    """Try to extract a JSON array from the model response."""
+    content = content.strip()
 
-    prompt = """You are reading a page from a lighting product catalog or price list.
+    # Strip markdown code fences
+    if "```" in content:
+        for part in content.split("```"):
+            part = part.strip().lstrip("json").strip()
+            try:
+                result = json.loads(part)
+                if isinstance(result, list):
+                    return result
+            except Exception:
+                continue
 
-Extract ONE entry for each product CODE (article number) you find.
-Each row in the table is typically one code with its own color and price.
+    # Try direct parse
+    try:
+        result = json.loads(content)
+        if isinstance(result, list):
+            return result
+    except Exception:
+        pass
 
-CRITICAL RULES:
-- Return one JSON object per code/row, not one per product family
-- Prices are often numbers WITHOUT a currency symbol (e.g. "14469,00" or "1234.50")
-- Find the currency by reading column HEADERS (e.g. "RMB excl. VAT", "EUR excl. VAT", "$ Price")
-- Convert comma-decimal prices to dot-decimal: 14469,00 → 14469.00
-- If there are accessories listed separately, include those too (they have codes and prices)
-- If a page has no product codes or prices (e.g. table of contents, cover), return []
+    # Try finding array inside the text
+    start = content.find("[")
+    end = content.rfind("]")
+    if start != -1 and end != -1:
+        try:
+            result = json.loads(content[start:end+1])
+            if isinstance(result, list):
+                return result
+        except Exception:
+            pass
 
-For each code row extract these fields (use null if not found):
-- codes: array with ONLY this one code, e.g. ["21019/DIM/AR"]
-- name: full product name including family and variant (e.g. "AVRO Studio Natural")
-- description: product description, type, emission type
-- color: color name and RAL/code for this specific row (e.g. "Orange Polished RAL 2001")
-- light_source: full light source text (e.g. "36W 5000lm Integrated LED", "max 75W E27")
-- cct: color temperature (e.g. "2700K", "3000K", "4000K")
-- dimensions: dimensions string (e.g. "Ø 400 H 2200 mm")
-- wattage: wattage with unit (e.g. "36W")
-- price: price as a decimal NUMBER only, no symbols (e.g. 14469.00)
-- currency: currency label from the column header (e.g. "RMB", "EUR", "USD", "GBP")
-- extra_fields: object with any other specs — IP rating, dimming info, voltage, driver type,
-  materials, weight, package dimensions, mounting type, etc.
+    return []
 
-Return ONLY a valid JSON array. Example:
-[
-  {"codes": ["21019/DIM/AR"], "name": "AVRO Studio Natural", "color": "Orange Polished RAL 2001",
-   "light_source": "36W 5000lm Integrated LED", "cct": "2700K", "price": 14469.00,
-   "currency": "RMB", "wattage": "36W", "dimensions": "Ø 400 H 2200 mm",
-   "extra_fields": {"ip": "IP20", "dimming": "DALI 2", "voltage": "220-240V"}},
-  {"codes": ["21019/DIM/AZ"], "name": "AVRO Studio Natural", "color": "Azure Polished RAL 5014", ...}
-]
 
-Return [] if no products are on this page. Return only JSON, no explanation."""
-
+def _call_model(client: OpenAI, model: str, img_b64: str, prompt: str) -> tuple[str, str]:
+    """Call a model, return (raw_response_text, error_message)."""
     try:
         response = client.chat.completions.create(
-            model="qwen/qwen2.5-vl-72b-instruct",
+            model=model,
             messages=[{
                 "role": "user",
                 "content": [
@@ -81,44 +80,97 @@ Return [] if no products are on this page. Return only JSON, no explanation."""
             }],
             max_tokens=4000
         )
-        content = response.choices[0].message.content.strip()
-
-        # Strip markdown code fences if present
-        if "```" in content:
-            for part in content.split("```"):
-                part = part.strip().lstrip("json").strip()
-                try:
-                    result = json.loads(part)
-                    if isinstance(result, list):
-                        return result
-                except Exception:
-                    continue
-
-        result = json.loads(content)
-        return result if isinstance(result, list) else []
-
+        return response.choices[0].message.content.strip(), ""
     except Exception as e:
-        print(f"AI extraction error on page {page_num}: {e}")
+        return "", str(e)
+
+
+EXTRACTION_PROMPT = """You are reading a page from a lighting product catalog or price list.
+
+Extract ONE entry for each product CODE (article number) visible on this page.
+Each row in the price table = one code with its own color and price.
+
+RULES:
+- One JSON object per code/row
+- Prices are plain numbers with no currency symbol (e.g. 3120,00 or 3120.00)
+- Find the currency label in the column HEADER (e.g. "RMBexcl. VAT" means currency is "RMB")
+- Convert comma decimals to dots: 3120,00 → 3120.00
+- Include accessories if they have codes and prices
+- If the page has no product codes (e.g. index, cover), return []
+
+Fields per entry (null if missing):
+- codes: ["SINGLE_CODE"] — only one code per entry
+- name: product family name (e.g. "CABRIOLETTE Body lamp")
+- description: emission type, light source description
+- color: color + RAL for this specific row (e.g. "White Polished RAL 9003")
+- light_source: full text (e.g. "7,5W 1110lm Integrated LED")
+- cct: color temperature (e.g. "2700K")
+- dimensions: from drawing or spec (e.g. "Ø15,5 H 28 cm")
+- wattage: just the watts (e.g. "7.5W")
+- price: number only, dot decimal (e.g. 3120.00)
+- currency: from column header (e.g. "RMB", "EUR", "USD")
+- extra_fields: object with ip_rating, dimming, voltage, driver, structure, diffuser,
+  net_weight, gross_weight, package_nr, package_dimension, etc.
+
+Return ONLY a valid JSON array. Example for this type of page:
+[
+  {"codes":["40224/BI"],"name":"CABRIOLETTE Body lamp","color":"White Polished RAL 9003","light_source":"7,5W 1110lm","cct":"2700K","price":3120.00,"currency":"RMB","wattage":"7.5W","dimensions":"Ø15,5 H28cm","description":"Direct Light, Adjustable Light, Integrated LED","extra_fields":{"voltage":"24V","driver":"Excluded External","structure":"Aluminium","diffuser":"Methacrylate 040","net_weight":"1,6 Kg","package_dimension":"20x32x20 cm"}},
+  {"codes":["40224/NE"],"name":"CABRIOLETTE Body lamp","color":"Black Polished RAL 9005","price":3120.00,"currency":"RMB",...}
+]"""
+
+
+def extract_products_from_page(client: OpenAI, page_image: Image.Image, page_num: int) -> list:
+    """Extract all product rows from a PDF page. Returns list of product dicts."""
+    img_b64 = image_to_base64(page_image)
+
+    # Try primary model first
+    raw, error = _call_model(client, PRIMARY_MODEL, img_b64, EXTRACTION_PROMPT)
+
+    if error or not raw:
+        # Try fallback model
+        raw, error = _call_model(client, FALLBACK_MODEL, img_b64, EXTRACTION_PROMPT)
+
+    if error:
+        print(f"Page {page_num} — both models failed: {error}")
         return []
+
+    result = _parse_json_response(raw)
+    return result
+
+
+def extract_products_debug(client: OpenAI, page_image: Image.Image) -> dict:
+    """
+    Debug version: returns raw response + parsed result + any errors.
+    Used by the Debug & Test page.
+    """
+    img_b64 = image_to_base64(page_image)
+
+    out = {"primary_model": PRIMARY_MODEL, "fallback_model": FALLBACK_MODEL,
+           "raw_response": "", "parsed": [], "error": ""}
+
+    raw, error = _call_model(client, PRIMARY_MODEL, img_b64, EXTRACTION_PROMPT)
+    out["raw_response"] = raw
+    out["error"] = error
+
+    if error or not raw:
+        raw2, error2 = _call_model(client, FALLBACK_MODEL, img_b64, EXTRACTION_PROMPT)
+        out["raw_response_fallback"] = raw2
+        out["error_fallback"] = error2
+        raw = raw2
+
+    if raw:
+        out["parsed"] = _parse_json_response(raw)
+
+    return out
 
 
 def describe_image(client: OpenAI, image: Image.Image) -> str:
     """Generate a text description of a product image for semantic search."""
     img_b64 = image_to_base64(image)
-
-    prompt = """Describe this lighting product for product matching. Include:
-- Type (pendant, wall light, floor lamp, ceiling light, spotlight, etc.)
-- Shape and silhouette
-- Materials and finish
-- Colors
-- Style (modern, industrial, classic, minimalist, etc.)
-- Any visible codes or numbers
-
-Be specific. Return only the description."""
-
+    prompt = """Describe this lighting product for matching. Include type, shape, materials, colors, style, any visible codes. Be specific and concise."""
     try:
         response = client.chat.completions.create(
-            model="qwen/qwen2.5-vl-72b-instruct",
+            model=PRIMARY_MODEL,
             messages=[{
                 "role": "user",
                 "content": [
@@ -130,5 +182,4 @@ Be specific. Return only the description."""
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
-        print(f"Image description error: {e}")
         return ""
