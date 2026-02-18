@@ -26,31 +26,48 @@ def image_to_base64(image: Image.Image) -> str:
 
 def extract_products_from_page(client: OpenAI, page_image: Image.Image, page_num: int) -> list:
     """
-    Send a rendered PDF page to Qwen and extract all product data from it.
-    Returns a list of product dicts.
+    Send a rendered PDF page to Qwen and extract all product rows from it.
+    Returns a list of dicts — one dict per product CODE (article number).
     """
     img_b64 = image_to_base64(page_image)
 
-    prompt = """You are reading a page from a lighting product catalog.
-Extract EVERY product visible on this page.
+    prompt = """You are reading a page from a lighting product catalog or price list.
 
-For each product return a JSON object with these fields (use null if not found):
-- codes: array of ALL article/product codes (one image often covers multiple codes)
-- name: product name
-- description: full product description
-- color: color name or code
-- light_source: LED, halogen, fluorescent, etc.
-- dimensions: size/dimensions
-- wattage: power in watts
-- price: price as a number ONLY (no currency symbol)
-- currency: the currency symbol found (€, $, £, etc.)
-- extra_fields: object with any other specifications (IP rating, lumen, CRI, kelvin, material, etc.)
+Extract ONE entry for each product CODE (article number) you find.
+Each row in the table is typically one code with its own color and price.
 
-Return ONLY a valid JSON array like:
-[{"codes": ["AB123", "AB124"], "name": "Wall Light", "color": "White", "price": 149.00, "currency": "€", ...}]
+CRITICAL RULES:
+- Return one JSON object per code/row, not one per product family
+- Prices are often numbers WITHOUT a currency symbol (e.g. "14469,00" or "1234.50")
+- Find the currency by reading column HEADERS (e.g. "RMB excl. VAT", "EUR excl. VAT", "$ Price")
+- Convert comma-decimal prices to dot-decimal: 14469,00 → 14469.00
+- If there are accessories listed separately, include those too (they have codes and prices)
+- If a page has no product codes or prices (e.g. table of contents, cover), return []
 
-If no products are on this page, return [].
-Do not include any explanation, only the JSON array."""
+For each code row extract these fields (use null if not found):
+- codes: array with ONLY this one code, e.g. ["21019/DIM/AR"]
+- name: full product name including family and variant (e.g. "AVRO Studio Natural")
+- description: product description, type, emission type
+- color: color name and RAL/code for this specific row (e.g. "Orange Polished RAL 2001")
+- light_source: full light source text (e.g. "36W 5000lm Integrated LED", "max 75W E27")
+- cct: color temperature (e.g. "2700K", "3000K", "4000K")
+- dimensions: dimensions string (e.g. "Ø 400 H 2200 mm")
+- wattage: wattage with unit (e.g. "36W")
+- price: price as a decimal NUMBER only, no symbols (e.g. 14469.00)
+- currency: currency label from the column header (e.g. "RMB", "EUR", "USD", "GBP")
+- extra_fields: object with any other specs — IP rating, dimming info, voltage, driver type,
+  materials, weight, package dimensions, mounting type, etc.
+
+Return ONLY a valid JSON array. Example:
+[
+  {"codes": ["21019/DIM/AR"], "name": "AVRO Studio Natural", "color": "Orange Polished RAL 2001",
+   "light_source": "36W 5000lm Integrated LED", "cct": "2700K", "price": 14469.00,
+   "currency": "RMB", "wattage": "36W", "dimensions": "Ø 400 H 2200 mm",
+   "extra_fields": {"ip": "IP20", "dimming": "DALI 2", "voltage": "220-240V"}},
+  {"codes": ["21019/DIM/AZ"], "name": "AVRO Studio Natural", "color": "Azure Polished RAL 5014", ...}
+]
+
+Return [] if no products are on this page. Return only JSON, no explanation."""
 
     try:
         response = client.chat.completions.create(
@@ -62,17 +79,14 @@ Do not include any explanation, only the JSON array."""
                     {"type": "text", "text": prompt}
                 ]
             }],
-            max_tokens=2500
+            max_tokens=4000
         )
         content = response.choices[0].message.content.strip()
 
         # Strip markdown code fences if present
         if "```" in content:
-            parts = content.split("```")
-            for part in parts:
-                part = part.strip()
-                if part.startswith("json"):
-                    part = part[4:].strip()
+            for part in content.split("```"):
+                part = part.strip().lstrip("json").strip()
                 try:
                     result = json.loads(part)
                     if isinstance(result, list):
@@ -89,13 +103,10 @@ Do not include any explanation, only the JSON array."""
 
 
 def describe_image(client: OpenAI, image: Image.Image) -> str:
-    """
-    Generate a text description of a product image.
-    Used to enable semantic image search.
-    """
+    """Generate a text description of a product image for semantic search."""
     img_b64 = image_to_base64(image)
 
-    prompt = """Describe this lighting product in detail for product matching purposes. Include:
+    prompt = """Describe this lighting product for product matching. Include:
 - Type (pendant, wall light, floor lamp, ceiling light, spotlight, etc.)
 - Shape and silhouette
 - Materials and finish
@@ -103,7 +114,7 @@ def describe_image(client: OpenAI, image: Image.Image) -> str:
 - Style (modern, industrial, classic, minimalist, etc.)
 - Any visible codes or numbers
 
-Be specific. Return only the description, no extra text."""
+Be specific. Return only the description."""
 
     try:
         response = client.chat.completions.create(
