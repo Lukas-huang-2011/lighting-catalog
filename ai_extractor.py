@@ -11,8 +11,8 @@ from openai import OpenAI
 
 # Primary model: Gemini Flash (free, excellent vision)
 # Fallback: Qwen VL (also free tier)
-PRIMARY_MODEL = "google/gemini-flash-1.5"
-FALLBACK_MODEL = "google/gemini-flash-1.5-8b"
+PRIMARY_MODEL = "google/gemini-2.0-flash-001"
+FALLBACK_MODEL = "anthropic/claude-3-haiku"
 
 
 def get_client(api_key: str) -> OpenAI:
