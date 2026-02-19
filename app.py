@@ -140,12 +140,8 @@ if page == "📤 Upload & Extract":
             dpi = st.select_slider("Render quality", [100, 150, 200], value=150)
 
         if st.button("🚀 Upload & Extract All Products", type="primary"):
-            api_key = st.secrets.get("OPENROUTER_API_KEY", "")
-            if not api_key:
-                st.error("OpenRouter API key not configured in Streamlit secrets.")
-                st.stop()
 
-            ai_client = ai.get_client(api_key)
+            ai_client = ai.get_client()
 
             with st.spinner("Uploading PDF…"):
                 file_url = db.upload_pdf(client, pdf_bytes, uploaded.name)
@@ -397,10 +393,6 @@ elif page == "🛠️ Debug & Test":
     test_page = st.number_input("Page number to test (0 = first page)", min_value=0, value=11)
 
     if test_pdf and st.button("🤖 Run test extraction on this page"):
-        api_key = st.secrets.get("OPENROUTER_API_KEY", "")
-        if not api_key:
-            st.error("No OpenRouter API key in secrets.")
-            st.stop()
 
         pdf_bytes = test_pdf.read()
         page_count = pdf.get_page_count(pdf_bytes)
@@ -411,19 +403,17 @@ elif page == "🛠️ Debug & Test":
         page_img = pages[page_num]
         st.image(page_img, caption=f"Page {page_num + 1} as seen by AI", use_container_width=True)
 
-        st.info("Sending to Gemini Flash AI…")
-        ai_client = ai.get_client(api_key)
+        st.info("Sending to Gemini AI…")
+        ai_client = ai.get_client()
         debug_result = ai.extract_products_debug(ai_client, page_img)
 
         # Show errors if any
         if debug_result.get("error"):
             st.error(f"❌ Primary model error: {debug_result['error']}")
-        if debug_result.get("error_fallback"):
-            st.error(f"❌ Fallback model error: {debug_result['error_fallback']}")
 
         # Show raw response
         with st.expander("📄 Raw AI response (click to inspect)"):
-            st.text(debug_result.get("raw_response") or debug_result.get("raw_response_fallback") or "No response received")
+            st.text(debug_result.get("raw_response") or "No response received")
 
         # Show parsed results
         result = debug_result.get("parsed", [])
