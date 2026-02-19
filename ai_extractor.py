@@ -163,18 +163,19 @@ Return ONLY a valid JSON array. No explanation. No markdown. Include EVERY code 
 
 
 def _split_image(image: Image.Image):
-    """Split a page image into top and bottom halves with a small overlap."""
+    """Split a page image into three sections with overlap so no row gets cut off."""
     w, h = image.size
-    # 10% overlap at the split point so no row gets cut off
-    overlap = int(h * 0.10)
-    top = image.crop((0, 0, w, h // 2 + overlap))
-    bottom = image.crop((0, h // 2 - overlap, w, h))
-    return top, bottom
+    overlap = int(h * 0.08)  # 8% overlap between sections
+    third = h // 3
+    top    = image.crop((0, 0,                  w, third + overlap))
+    middle = image.crop((0, third - overlap,    w, third * 2 + overlap))
+    bottom = image.crop((0, third * 2 - overlap, w, h))
+    return top, middle, bottom
 
 
-def _extract_half(api_key: str, half_image: Image.Image) -> list:
-    """Extract products from one image (half-page or full page)."""
-    text, error, _, _ = _call_best(api_key, half_image, PROMPT)
+def _extract_section(api_key: str, section_image: Image.Image) -> list:
+    """Extract products from one image section."""
+    text, error, _, _ = _call_best(api_key, section_image, PROMPT)
     if error:
         return []
     return _parse_json(text)
@@ -195,34 +196,42 @@ def _dedup(products: list) -> list:
 def extract_products_from_page(api_key: str, page_image: Image.Image, page_num: int) -> list:
     """
     Extract all products from a page.
-    Splits into top/bottom halves to handle pages with many products
+    Splits into three sections to handle pages with many products
     that would otherwise exceed the AI token limit.
     """
-    top, bottom = _split_image(page_image)
-    top_products = _extract_half(api_key, top)
-    bottom_products = _extract_half(api_key, bottom)
-    all_products = _dedup(top_products + bottom_products)
+    top, middle, bottom = _split_image(page_image)
+    all_products = _dedup(
+        _extract_section(api_key, top) +
+        _extract_section(api_key, middle) +
+        _extract_section(api_key, bottom)
+    )
     return all_products
 
 
 def extract_products_debug(api_key: str, page_image: Image.Image) -> dict:
-    """Debug version — shows raw responses from both halves."""
-    top, bottom = _split_image(page_image)
+    """Debug version — shows raw responses from all three sections."""
+    top, middle, bottom = _split_image(page_image)
 
-    top_text, top_err, version, model = _call_best(api_key, top, PROMPT)
-    bottom_text, bottom_err, _, _ = _call_best(api_key, bottom, PROMPT)
+    top_text,    top_err,    version, model = _call_best(api_key, top,    PROMPT)
+    mid_text,    mid_err,    _,       _     = _call_best(api_key, middle, PROMPT)
+    bottom_text, bottom_err, _,       _     = _call_best(api_key, bottom, PROMPT)
 
-    top_parsed = _parse_json(top_text) if top_text else []
+    top_parsed    = _parse_json(top_text)    if top_text    else []
+    mid_parsed    = _parse_json(mid_text)    if mid_text    else []
     bottom_parsed = _parse_json(bottom_text) if bottom_text else []
-    all_products = _dedup(top_parsed + bottom_parsed)
+    all_products  = _dedup(top_parsed + mid_parsed + bottom_parsed)
 
-    raw = f"=== TOP HALF ({len(top_parsed)} products) ===\n{top_text}\n\n=== BOTTOM HALF ({len(bottom_parsed)} products) ===\n{bottom_text}"
+    raw = (
+        f"=== TOP THIRD ({len(top_parsed)} products) ===\n{top_text}\n\n"
+        f"=== MIDDLE THIRD ({len(mid_parsed)} products) ===\n{mid_text}\n\n"
+        f"=== BOTTOM THIRD ({len(bottom_parsed)} products) ===\n{bottom_text}"
+    )
 
     return {
         "model": f"{version}/{model}",
         "raw_response": raw,
         "parsed": all_products,
-        "error": top_err or bottom_err,
+        "error": top_err or mid_err or bottom_err,
     }
 
 
