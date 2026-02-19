@@ -10,7 +10,7 @@ from PIL import Image
 import google.generativeai as genai
 import streamlit as st
 
-MODEL_NAME = "gemini-2.0-flash"
+MODEL_NAME = "gemini-1.5-flash"
 
 
 def get_client():
