@@ -2,6 +2,7 @@
 AI extraction using Google Gemini REST API directly.
 Auto-detects the correct model name and API version.
 Free tier: 1,500 requests/day.
+Pages with many products are split into halves to avoid token limits.
 """
 
 import json
@@ -76,7 +77,6 @@ def _parse_json(content: str) -> list:
         last_close = content.rfind("}")
         if last_close != -1:
             try:
-                # Try to close the array after the last complete object
                 truncated = content[s:last_close+1] + "]"
                 r = json.loads(truncated)
                 if isinstance(r, list):
@@ -127,61 +127,103 @@ def _call_best(api_key: str, image: Image.Image, prompt: str) -> tuple:
     return "", f"All models failed. Last error: {err}", "", ""
 
 
-PROMPT = """You are reading a page from a lighting product catalog or price list.
+PROMPT = """You are reading a portion of a lighting product catalog or price list.
 
-YOUR TASK: Extract EVERY row that has a product code (article number) on this page.
-Scan the ENTIRE page from top to bottom — do NOT stop after the first product group.
+YOUR TASK: Extract EVERY row that has a product code (article number) visible in this image.
+Scan from top to bottom — do NOT stop early.
 
 WHAT TO EXTRACT:
 1. MAIN product rows — each color/variant row under a product family header
-2. ACCESSORY rows — rows listed under "Accessories" or "Accessori" sections (they have their own codes and prices)
-3. MULTIPLE product families — if the page has e.g. "AVRO Studio Natural" AND "AVRO Junior", extract ALL rows from BOTH families
-4. Every single row with a code = one JSON entry
+2. ACCESSORY rows — rows under "Accessories" or "Accessori" sections (they have own codes + prices)
+3. ALL product families visible — if multiple products are shown, extract ALL of them
+4. Every single row with a code = one JSON entry, no exceptions
 
 RULES:
-- One JSON object per code/row — never skip a row that has a code
-- Prices are plain numbers, no currency symbol (e.g. 3120,00 or 3120.00)
-- Find the currency label in the column HEADER (e.g. "RMBexcl. VAT" → currency="RMB")
-- Convert comma decimals to dots: 3120,00 → 3120.00
-- For accessory rows: set name = accessory description (e.g. "Canopy", "Suspension kit"), color = null unless listed
-- For accessory rows: inherit currency from the same page header
-- If a product family has 8 color variants AND 6 accessory rows = 14 total entries for that family
-- If the page has 2 product families each with variants + accessories = extract ALL of them
-- If no product codes on this page (index page, cover, intro text), return []
+- One JSON object per code/row
+- Prices are plain numbers (e.g. 3120.00) — convert comma decimals: 3120,00 → 3120.00
+- Find currency from the column HEADER (e.g. "RMBexcl. VAT" → "RMB")
+- OMIT any field that has no value — do NOT write null, just skip the key entirely
+- Keep field values short and factual
+- If no product codes visible (cover, index, pure text page), return []
 
-Fields per entry (null if not found):
-- codes: ["ONE_CODE"]
-- name: product family name (e.g. "AVRO Studio Natural") OR accessory name (e.g. "Canopy white")
-- description: emission type, mounting type, or accessory description
-- color: color name (e.g. "Arancio", "Bianco") — null for most accessories
-- light_source: full text (e.g. "7.5W 1110lm Integrated LED") — null for accessories
-- cct: color temperature (e.g. "2700K", "3000K") — null for accessories
-- dimensions: size string (e.g. "Ø15.5 H28 cm")
-- wattage: watts only (e.g. "7.5W") — null for accessories
-- price: number dot decimal (e.g. 3120.00)
-- currency: from column header (e.g. "RMB", "EUR", "USD")
-- extra_fields: {ip_rating, dimming, voltage, driver, structure, diffuser, net_weight, gross_weight, package_dimension}
+Fields to include (only when value exists):
+- codes: ["CODE"] — required
+- name: product family name or accessory description — required
+- color: color name (e.g. "Arancio", "Bianco")
+- light_source: e.g. "7.5W 1110lm Integrated LED"
+- cct: e.g. "2700K"
+- dimensions: e.g. "Ø15.5 H28 cm"
+- wattage: e.g. "7.5W"
+- price: number (e.g. 3120.00) — required if visible
+- currency: e.g. "RMB" — required if visible
+- description: short description, mounting type, or accessory use
+- extra_fields: object with any of {ip_rating, dimming, voltage, driver, structure, diffuser, net_weight}
 
-Return ONLY a valid JSON array. No explanation, no markdown. Include EVERY code row."""
+Return ONLY a valid JSON array. No explanation. No markdown. Include EVERY code row."""
 
 
-def extract_products_from_page(api_key: str, page_image: Image.Image, page_num: int) -> list:
-    text, error, _, _ = _call_best(api_key, page_image, PROMPT)
+def _split_image(image: Image.Image):
+    """Split a page image into top and bottom halves with a small overlap."""
+    w, h = image.size
+    # 10% overlap at the split point so no row gets cut off
+    overlap = int(h * 0.10)
+    top = image.crop((0, 0, w, h // 2 + overlap))
+    bottom = image.crop((0, h // 2 - overlap, w, h))
+    return top, bottom
+
+
+def _extract_half(api_key: str, half_image: Image.Image) -> list:
+    """Extract products from one image (half-page or full page)."""
+    text, error, _, _ = _call_best(api_key, half_image, PROMPT)
     if error:
-        print(f"Page {page_num}: {error}")
         return []
     return _parse_json(text)
 
 
+def _dedup(products: list) -> list:
+    """Remove duplicate entries by code (keeps first occurrence)."""
+    seen = set()
+    result = []
+    for p in products:
+        key = str(p.get("codes", ""))
+        if key not in seen:
+            seen.add(key)
+            result.append(p)
+    return result
+
+
+def extract_products_from_page(api_key: str, page_image: Image.Image, page_num: int) -> list:
+    """
+    Extract all products from a page.
+    Splits into top/bottom halves to handle pages with many products
+    that would otherwise exceed the AI token limit.
+    """
+    top, bottom = _split_image(page_image)
+    top_products = _extract_half(api_key, top)
+    bottom_products = _extract_half(api_key, bottom)
+    all_products = _dedup(top_products + bottom_products)
+    return all_products
+
+
 def extract_products_debug(api_key: str, page_image: Image.Image) -> dict:
-    out = {"model": "", "raw_response": "", "parsed": [], "error": ""}
-    text, error, version, model = _call_best(api_key, page_image, PROMPT)
-    out["model"] = f"{version}/{model}"
-    out["raw_response"] = text
-    out["error"] = error
-    if text:
-        out["parsed"] = _parse_json(text)
-    return out
+    """Debug version — shows raw responses from both halves."""
+    top, bottom = _split_image(page_image)
+
+    top_text, top_err, version, model = _call_best(api_key, top, PROMPT)
+    bottom_text, bottom_err, _, _ = _call_best(api_key, bottom, PROMPT)
+
+    top_parsed = _parse_json(top_text) if top_text else []
+    bottom_parsed = _parse_json(bottom_text) if bottom_text else []
+    all_products = _dedup(top_parsed + bottom_parsed)
+
+    raw = f"=== TOP HALF ({len(top_parsed)} products) ===\n{top_text}\n\n=== BOTTOM HALF ({len(bottom_parsed)} products) ===\n{bottom_text}"
+
+    return {
+        "model": f"{version}/{model}",
+        "raw_response": raw,
+        "parsed": all_products,
+        "error": top_err or bottom_err,
+    }
 
 
 def describe_image(api_key: str, image: Image.Image) -> str:
