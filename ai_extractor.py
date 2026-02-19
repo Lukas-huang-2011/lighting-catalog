@@ -40,6 +40,8 @@ def image_to_base64(image: Image.Image) -> str:
 
 def _parse_json(content: str) -> list:
     content = content.strip()
+
+    # Extract from markdown code fences if present
     if "```" in content:
         for part in content.split("```"):
             part = part.strip().lstrip("json").strip()
@@ -49,12 +51,16 @@ def _parse_json(content: str) -> list:
                     return r
             except Exception:
                 continue
+
+    # Direct parse
     try:
         r = json.loads(content)
         if isinstance(r, list):
             return r
     except Exception:
         pass
+
+    # Try between first [ and last ]
     s, e = content.find("["), content.rfind("]")
     if s != -1 and e != -1:
         try:
@@ -63,6 +69,21 @@ def _parse_json(content: str) -> list:
                 return r
         except Exception:
             pass
+
+    # Handle TRUNCATED JSON — find last complete object and close the array
+    s = content.find("[")
+    if s != -1:
+        last_close = content.rfind("}")
+        if last_close != -1:
+            try:
+                # Try to close the array after the last complete object
+                truncated = content[s:last_close+1] + "]"
+                r = json.loads(truncated)
+                if isinstance(r, list):
+                    return r
+            except Exception:
+                pass
+
     return []
 
 
@@ -75,7 +96,7 @@ def _call(api_key: str, version: str, model: str, image: Image.Image, prompt: st
             {"text": prompt},
             {"inline_data": {"mime_type": "image/png", "data": img_b64}}
         ]}],
-        "generationConfig": {"maxOutputTokens": 4000, "temperature": 0.1}
+        "generationConfig": {"maxOutputTokens": 8192, "temperature": 0.1}
     }
     try:
         resp = requests.post(url, json=payload, timeout=60)
