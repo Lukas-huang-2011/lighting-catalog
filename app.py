@@ -137,7 +137,8 @@ if page == "📤 Upload & Extract":
         with col1:
             extract_images_flag = st.checkbox("Extract product images", value=True)
         with col2:
-            dpi = st.select_slider("Render quality", [100, 150, 200], value=150)
+            dpi = st.select_slider("Render quality", [100, 150, 200], value=100,
+                                   help="100 recommended — uses less memory and is fast enough for AI reading")
 
         if st.button("🚀 Upload & Extract All Products", type="primary"):
 
@@ -412,11 +413,10 @@ elif page == "🛠️ Debug & Test":
 
         pdf_bytes = test_pdf.read()
         page_count = pdf.get_page_count(pdf_bytes)
-        page_num = min(test_page, page_count - 1)
+        page_num = min(int(test_page), page_count - 1)
 
         st.info(f"Rendering page {page_num + 1} of {page_count}…")
-        pages = list(pdf.render_pages(pdf_bytes, dpi=150))
-        page_img = pages[page_num]
+        page_img = pdf.render_single_page(pdf_bytes, page_num, dpi=100)
         st.image(page_img, caption=f"Page {page_num + 1} as seen by AI", use_container_width=True)
 
         st.info("Sending to Gemini AI…")
