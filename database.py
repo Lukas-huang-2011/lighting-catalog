@@ -88,16 +88,34 @@ def save_product_image(client: Client, product_id: str, image_url: str,
 
 
 def search_by_code(client: Client, query: str) -> list:
-    query = query.strip().upper()
-    res = client.table("products") \
+    q = query.strip()
+    if not q:
+        return []
+
+    seen_ids = set()
+    results = []
+
+    # 1. Exact code match (e.g. user typed full code "21019/DIM/AR")
+    exact = client.table("products") \
         .select("*, pdfs(name), product_images(image_url, image_hash)") \
-        .contains("codes", [query]).execute()
-    if res.data:
-        return res.data
-    res = client.table("products") \
+        .contains("codes", [q.upper()]) \
+        .limit(50).execute()
+    for row in (exact.data or []):
+        if row["id"] not in seen_ids:
+            seen_ids.add(row["id"])
+            results.append(row)
+
+    # 2. Partial match — searches codes, name, color, description, anything in raw_text
+    partial = client.table("products") \
         .select("*, pdfs(name), product_images(image_url, image_hash)") \
-        .ilike("raw_text", f"%{query}%").execute()
-    return res.data
+        .ilike("raw_text", f"%{q}%") \
+        .limit(100).execute()
+    for row in (partial.data or []):
+        if row["id"] not in seen_ids:
+            seen_ids.add(row["id"])
+            results.append(row)
+
+    return results[:100]
 
 
 def get_all_image_hashes(client: Client) -> list:
