@@ -441,19 +441,22 @@ elif page == "🛠️ Debug & Test":
 
     st.divider()
     st.subheader("2. Check available Gemini models")
-    if st.button("🔍 List available models for my API key"):
+    if st.button("🔍 Test Zhipu AI connection"):
         import requests as req
-        api_key = st.secrets.get("GEMINI_API_KEY", "")
-        for version in ["v1", "v1beta"]:
-            r = req.get(f"https://generativelanguage.googleapis.com/{version}/models?key={api_key}", timeout=10)
+        api_key = st.secrets.get("ZHIPU_API_KEY", "")
+        if not api_key:
+            st.error("ZHIPU_API_KEY not set in Streamlit secrets.")
+        else:
+            r = req.post(
+                "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={"model": "glm-4v-flash", "messages": [{"role": "user", "content": "Hi"}], "max_tokens": 10},
+                timeout=15
+            )
             if r.status_code == 200:
-                models = r.json().get("models", [])
-                vision_models = [m["name"] for m in models if "generateContent" in m.get("supportedGenerationMethods", [])]
-                st.success(f"✅ Found {len(vision_models)} usable models on **{version}**:")
-                st.code("\n".join(vision_models))
-                break
+                st.success("✅ Zhipu AI connection works! Model: glm-4v-flash (free)")
             else:
-                st.warning(f"{version}: {r.status_code} — {r.text[:200]}")
+                st.error(f"❌ {r.status_code}: {r.text[:300]}")
 
     st.divider()
     st.subheader("3. Test AI extraction on one page")
