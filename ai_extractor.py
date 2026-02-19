@@ -35,10 +35,18 @@ def get_client():
     return api_key
 
 
-def image_to_base64(image: Image.Image) -> str:
+def image_to_base64(image: Image.Image) -> tuple:
+    """Returns (base64_string, mime_type). Resizes and compresses to JPEG for Zhipu AI."""
+    img = image.convert("RGB")
+    # Zhipu recommends images under 5MB; resize if too large
+    max_side = 1500
+    w, h = img.size
+    if max(w, h) > max_side:
+        scale = max_side / max(w, h)
+        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
     buf = io.BytesIO()
-    image.convert("RGB").save(buf, format="PNG")
-    return base64.b64encode(buf.getvalue()).decode()
+    img.save(buf, format="JPEG", quality=85)
+    return base64.b64encode(buf.getvalue()).decode(), "image/jpeg"
 
 
 def _parse_json(content: str) -> list:
@@ -90,7 +98,7 @@ def _parse_json(content: str) -> list:
 
 def _call(api_key: str, model: str, image: Image.Image, prompt: str) -> tuple:
     """Returns (response_text, error_string). Retries on 429 with backoff."""
-    img_b64 = image_to_base64(image)
+    img_b64, mime = image_to_base64(image)
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -101,11 +109,11 @@ def _call(api_key: str, model: str, image: Image.Image, prompt: str) -> tuple:
             "role": "user",
             "content": [
                 {"type": "image_url",
-                 "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
+                 "image_url": {"url": f"data:{mime};base64,{img_b64}"}},
                 {"type": "text", "text": prompt},
             ],
         }],
-        "max_tokens": 8192,
+        "max_tokens": 4096,
         "temperature": 0.1,
     }
     for attempt in range(4):
