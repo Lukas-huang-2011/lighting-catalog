@@ -1,34 +1,36 @@
 """
-AI extraction using Google Gemini REST API directly.
-Auto-detects the correct model name and API version.
-Free tier: 1,500 requests/day.
-Pages with many products are split into halves to avoid token limits.
+AI extraction using GLM-4V-Flash via Zhipu AI (free vision model).
+Get a free API key at: https://bigmodel.cn → 开放平台 → API Keys
+OpenAI-compatible endpoint.
 """
 
 import json
 import base64
 import io
+import time
 import requests
 from PIL import Image
 import streamlit as st
 
-# Candidates to try in order — first working one is used
+API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+
+# Models to try in order — glm-4v-flash is free
 CANDIDATES = [
-    ("v1", "gemini-2.0-flash"),
-    ("v1", "gemini-2.5-flash"),
-    ("v1", "gemini-2.0-flash-001"),
-    ("v1", "gemini-2.0-flash-lite"),
-    ("v1", "gemini-2.5-flash-lite"),
+    "glm-4v-flash",
+    "glm-4v-plus",
+    "glm-4v",
 ]
 
-# Cache which combo works so we don't retry every page
-_working = {"version": None, "model": None}
+_working_model = {"model": None}
 
 
 def get_client():
-    api_key = st.secrets.get("GEMINI_API_KEY", "")
+    api_key = st.secrets.get("ZHIPU_API_KEY", "")
     if not api_key:
-        st.error("GEMINI_API_KEY not found in Streamlit secrets. Get one free at aistudio.google.com")
+        st.error(
+            "ZHIPU_API_KEY not found in Streamlit secrets. "
+            "Get a free key at bigmodel.cn → API Keys."
+        )
         st.stop()
     return api_key
 
@@ -42,7 +44,7 @@ def image_to_base64(image: Image.Image) -> str:
 def _parse_json(content: str) -> list:
     content = content.strip()
 
-    # Extract from markdown code fences if present
+    # Strip markdown code fences
     if "```" in content:
         for part in content.split("```"):
             part = part.strip().lstrip("json").strip()
@@ -65,20 +67,19 @@ def _parse_json(content: str) -> list:
     s, e = content.find("["), content.rfind("]")
     if s != -1 and e != -1:
         try:
-            r = json.loads(content[s:e+1])
+            r = json.loads(content[s:e + 1])
             if isinstance(r, list):
                 return r
         except Exception:
             pass
 
-    # Handle TRUNCATED JSON — find last complete object and close the array
+    # Truncated JSON — find last complete object and close the array
     s = content.find("[")
     if s != -1:
         last_close = content.rfind("}")
         if last_close != -1:
             try:
-                truncated = content[s:last_close+1] + "]"
-                r = json.loads(truncated)
+                r = json.loads(content[s:last_close + 1] + "]")
                 if isinstance(r, list):
                     return r
             except Exception:
@@ -87,44 +88,56 @@ def _parse_json(content: str) -> list:
     return []
 
 
-def _call(api_key: str, version: str, model: str, image: Image.Image, prompt: str) -> tuple:
-    """Returns (response_text, error_string)."""
-    url = f"https://generativelanguage.googleapis.com/{version}/models/{model}:generateContent?key={api_key}"
+def _call(api_key: str, model: str, image: Image.Image, prompt: str) -> tuple:
+    """Returns (response_text, error_string). Retries on 429 with backoff."""
     img_b64 = image_to_base64(image)
-    payload = {
-        "contents": [{"parts": [
-            {"text": prompt},
-            {"inline_data": {"mime_type": "image/png", "data": img_b64}}
-        ]}],
-        "generationConfig": {"maxOutputTokens": 8192, "temperature": 0.1}
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
     }
-    try:
-        resp = requests.post(url, json=payload, timeout=60)
-        if resp.status_code == 200:
-            text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-            return text, ""
-        return "", f"HTTP {resp.status_code}: {resp.text[:300]}"
-    except Exception as e:
-        return "", str(e)
+    payload = {
+        "model": model,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "image_url",
+                 "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
+                {"type": "text", "text": prompt},
+            ],
+        }],
+        "max_tokens": 8192,
+        "temperature": 0.1,
+    }
+    for attempt in range(4):
+        try:
+            resp = requests.post(API_URL, json=payload, headers=headers, timeout=90)
+            if resp.status_code == 200:
+                text = resp.json()["choices"][0]["message"]["content"]
+                return text, ""
+            if resp.status_code == 429:
+                wait = 15 * (attempt + 1)   # 15s → 30s → 45s
+                time.sleep(wait)
+                continue
+            return "", f"HTTP {resp.status_code}: {resp.text[:300]}"
+        except Exception as ex:
+            return "", str(ex)
+    return "", "Rate limited after retries"
 
 
 def _call_best(api_key: str, image: Image.Image, prompt: str) -> tuple:
-    """Try candidates, return (text, error, version_used, model_used)."""
-    # Use cached working combo first
-    if _working["version"]:
-        text, err = _call(api_key, _working["version"], _working["model"], image, prompt)
+    """Try model candidates, return (text, error, model_used)."""
+    if _working_model["model"]:
+        text, err = _call(api_key, _working_model["model"], image, prompt)
         if not err:
-            return text, "", _working["version"], _working["model"]
+            return text, "", _working_model["model"]
 
-    # Try all candidates
-    for version, model in CANDIDATES:
-        text, err = _call(api_key, version, model, image, prompt)
+    for model in CANDIDATES:
+        text, err = _call(api_key, model, image, prompt)
         if not err:
-            _working["version"] = version
-            _working["model"] = model
-            return text, "", version, model
+            _working_model["model"] = model
+            return text, "", model
 
-    return "", f"All models failed. Last error: {err}", "", ""
+    return "", f"All models failed. Last error: {err}", ""
 
 
 PROMPT = """You are reading a portion of a lighting product catalog or price list.
@@ -165,25 +178,23 @@ Return ONLY a valid JSON array. No explanation. No markdown. Include EVERY code 
 def _split_image(image: Image.Image):
     """Split a page into 4 sections with overlap so no row gets cut off."""
     w, h = image.size
-    overlap = int(h * 0.08)  # 8% overlap between sections
-    q = h // 4  # quarter height
-    s1 = image.crop((0, 0,              w, q + overlap))
-    s2 = image.crop((0, q - overlap,    w, q * 2 + overlap))
+    overlap = int(h * 0.08)
+    q = h // 4
+    s1 = image.crop((0, 0,               w, q + overlap))
+    s2 = image.crop((0, q - overlap,     w, q * 2 + overlap))
     s3 = image.crop((0, q * 2 - overlap, w, q * 3 + overlap))
     s4 = image.crop((0, q * 3 - overlap, w, h))
     return s1, s2, s3, s4
 
 
 def _extract_section(api_key: str, section_image: Image.Image) -> list:
-    """Extract products from one image section."""
-    text, error, _, _ = _call_best(api_key, section_image, PROMPT)
+    text, error, _ = _call_best(api_key, section_image, PROMPT)
     if error:
         return []
     return _parse_json(text)
 
 
 def _dedup(products: list) -> list:
-    """Remove duplicate entries by code (keeps first occurrence)."""
     seen = set()
     result = []
     for p in products:
@@ -197,27 +208,27 @@ def _dedup(products: list) -> list:
 def extract_products_from_page(api_key: str, page_image: Image.Image, page_num: int) -> list:
     """
     Extract all products from a page.
-    Splits into 4 sections so each section has ~6-8 products max,
-    well within the AI token limit.
+    Splits into 4 sections; waits 3s between calls to stay within 20 RPM free tier.
     """
     s1, s2, s3, s4 = _split_image(page_image)
-    all_products = _dedup(
-        _extract_section(api_key, s1) +
-        _extract_section(api_key, s2) +
-        _extract_section(api_key, s3) +
-        _extract_section(api_key, s4)
-    )
-    return all_products
+    results = []
+    for section in (s1, s2, s3, s4):
+        results.extend(_extract_section(api_key, section))
+        time.sleep(3)   # 3s gap → ~20 calls/min, within SiliconFlow free tier
+    return _dedup(results)
 
 
 def extract_products_debug(api_key: str, page_image: Image.Image) -> dict:
     """Debug version — shows raw responses from all 4 sections."""
     s1, s2, s3, s4 = _split_image(page_image)
 
-    t1, e1, version, model = _call_best(api_key, s1, PROMPT)
-    t2, e2, _,       _     = _call_best(api_key, s2, PROMPT)
-    t3, e3, _,       _     = _call_best(api_key, s3, PROMPT)
-    t4, e4, _,       _     = _call_best(api_key, s4, PROMPT)
+    t1, e1, m1 = _call_best(api_key, s1, PROMPT)
+    time.sleep(3)
+    t2, e2, _  = _call_best(api_key, s2, PROMPT)
+    time.sleep(3)
+    t3, e3, _  = _call_best(api_key, s3, PROMPT)
+    time.sleep(3)
+    t4, e4, _  = _call_best(api_key, s4, PROMPT)
 
     p1 = _parse_json(t1) if t1 else []
     p2 = _parse_json(t2) if t2 else []
@@ -233,7 +244,7 @@ def extract_products_debug(api_key: str, page_image: Image.Image) -> dict:
     )
 
     return {
-        "model": f"{version}/{model}",
+        "model": m1 or "unknown",
         "raw_response": raw,
         "parsed": all_products,
         "error": e1 or e2 or e3 or e4,
@@ -242,5 +253,5 @@ def extract_products_debug(api_key: str, page_image: Image.Image) -> dict:
 
 def describe_image(api_key: str, image: Image.Image) -> str:
     prompt = "Describe this lighting product briefly: type, shape, color, style, any visible codes."
-    text, _, _, _ = _call_best(api_key, image, prompt)
+    text, _, _ = _call_best(api_key, image, prompt)
     return text
