@@ -440,7 +440,7 @@ elif page == "🛠️ Debug & Test":
         st.warning("You may not have run the supabase_setup.sql yet. Go to Supabase → SQL Editor and run it.")
 
     st.divider()
-    st.subheader("2. Check available Gemini models")
+    st.subheader("2. Test AI connection")
     if st.button("🔍 Test Zhipu AI connection"):
         import requests as req
         api_key = st.secrets.get("ZHIPU_API_KEY", "")
@@ -473,7 +473,7 @@ elif page == "🛠️ Debug & Test":
         page_img = pdf.render_single_page(pdf_bytes, page_num, dpi=100)
         st.image(page_img, caption=f"Page {page_num + 1} as seen by AI", use_container_width=True)
 
-        st.info("Sending to Gemini AI…")
+        st.info("Sending to Zhipu AI (GLM-4V-Flash)…")
         ai_client = ai.get_client()
         debug_result = ai.extract_products_debug(ai_client, page_img)
 
