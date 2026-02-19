@@ -388,9 +388,25 @@ elif page == "🛠️ Debug & Test":
         st.warning("You may not have run the supabase_setup.sql yet. Go to Supabase → SQL Editor and run it.")
 
     st.divider()
-    st.subheader("2. Test AI extraction on one page")
+    st.subheader("2. Check available Gemini models")
+    if st.button("🔍 List available models for my API key"):
+        import requests as req
+        api_key = st.secrets.get("GEMINI_API_KEY", "")
+        for version in ["v1", "v1beta"]:
+            r = req.get(f"https://generativelanguage.googleapis.com/{version}/models?key={api_key}", timeout=10)
+            if r.status_code == 200:
+                models = r.json().get("models", [])
+                vision_models = [m["name"] for m in models if "generateContent" in m.get("supportedGenerationMethods", [])]
+                st.success(f"✅ Found {len(vision_models)} usable models on **{version}**:")
+                st.code("\n".join(vision_models))
+                break
+            else:
+                st.warning(f"{version}: {r.status_code} — {r.text[:200]}")
+
+    st.divider()
+    st.subheader("3. Test AI extraction on one page")
     test_pdf = st.file_uploader("Upload the PDF to test", type=["pdf"], key="debug_pdf")
-    test_page = st.number_input("Page number to test (0 = first page)", min_value=0, value=11)
+    test_page = st.number_input("Page number to test (0 = first page, try 11 for product pages)", min_value=0, value=11)
 
     if test_pdf and st.button("🤖 Run test extraction on this page"):
 
