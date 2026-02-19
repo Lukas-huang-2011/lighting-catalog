@@ -13,11 +13,11 @@ import streamlit as st
 
 # Candidates to try in order — first working one is used
 CANDIDATES = [
-    ("v1beta", "gemini-1.5-flash"),
-    ("v1beta", "gemini-1.5-flash-latest"),
-    ("v1",     "gemini-1.5-flash"),
-    ("v1beta", "gemini-1.5-pro"),
-    ("v1beta", "gemini-pro-vision"),
+    ("v1", "gemini-2.0-flash"),
+    ("v1", "gemini-2.5-flash"),
+    ("v1", "gemini-2.0-flash-001"),
+    ("v1", "gemini-2.0-flash-lite"),
+    ("v1", "gemini-2.5-flash-lite"),
 ]
 
 # Cache which combo works so we don't retry every page
