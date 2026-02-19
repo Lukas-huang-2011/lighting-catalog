@@ -291,18 +291,31 @@ elif page == "🖼️ Search by Image":
 # ═══════════════════════════════════════════════════════════════════════════════
 elif page == "💰 Pricing & Export":
     st.header("💰 Customer Pricing & Excel Export")
+    st.caption("Fills your order template automatically — just enter the product codes.")
 
+    # ── Order info ────────────────────────────────────────────────────────────
+    with st.expander("📋 Order Details", expanded=True):
+        oi_col1, oi_col2 = st.columns(2)
+        with oi_col1:
+            order_number   = st.text_input("Order Number", placeholder="e.g. 2602FF014")
+            customer_name  = st.text_input("Customer Name")
+        with oi_col2:
+            contact_person = st.text_input("Contact Person")
+            phone          = st.text_input("Phone")
+
+    # ── Products & discount ───────────────────────────────────────────────────
     col1, col2 = st.columns([3, 1])
     with col1:
-        codes_input = st.text_area("Product codes (one per line)", height=200,
-                                   placeholder="21019/DIM/AR\n21019/DIM/AZ")
+        codes_input = st.text_area("Product codes (one per line)", height=180,
+                                   placeholder="21019/DIM/AR\n21019/DIM/AZ\n40189/BI")
     with col2:
         discount = st.number_input("Discount factor", min_value=0.01, max_value=1.0,
-                                   value=0.7, step=0.01, help="0.7 = 30% off")
-        st.metric("Discount", f"{round((1-discount)*100,1)}% off")
-        include_imgs = st.checkbox("Include images in Excel", value=True)
+                                   value=0.45, step=0.01,
+                                   help="e.g. 0.45 means customer pays 45% of list price")
+        st.metric("Customer pays", f"{round(discount*100,0):.0f}% of list price")
+        default_qty = st.number_input("Default quantity", min_value=1, value=1, step=1)
 
-    if st.button("📊 Generate Excel Quote", type="primary"):
+    if st.button("🔍 Look Up Products", type="primary"):
         codes = [c.strip() for c in codes_input.splitlines() if c.strip()]
         if not codes:
             st.warning("Please enter at least one product code.")
@@ -312,35 +325,63 @@ elif page == "💰 Pricing & Export":
             products = db.get_products_by_codes(client, codes)
 
         if not products:
-            st.error("None of the entered codes were found.")
+            st.error("None of the codes were found in the database. Have you uploaded and extracted a catalog yet?")
             st.stop()
 
         not_found = [c for c in codes if not any(
             c.upper() in [x.upper() for x in (p.get("codes") or [])] for p in products
         )]
         if not_found:
-            st.warning(f"Not found: {', '.join(not_found)}")
+            st.warning(f"Not found in database: {', '.join(not_found)}")
 
-        st.success(f"Found **{len(products)}** product(s).")
-        rows = []
+        st.success(f"Found **{len(products)}** product(s). Set quantities below, then download.")
+
+        # Build editable preview table
+        import pandas as pd
+        preview_rows = []
         for p in products:
             orig = p.get("price")
             cust = round(orig * discount, 2) if orig else None
-            rows.append({
-                "Code(s)": ", ".join(p.get("codes") or []),
-                "Name": p.get("name") or "",
-                "Brand": extract_brand((p.get("pdfs") or {}).get("name") or ""),
-                "Color": p.get("color") or "",
-                "Original Price": f"{p.get('currency','')} {orig}" if orig else "—",
-                "Customer Price": f"{p.get('currency','')} {cust}" if cust else "—",
+            preview_rows.append({
+                "Code":     ", ".join(p.get("codes") or []),
+                "Brand":    extract_brand((p.get("pdfs") or {}).get("name") or ""),
+                "Name":     p.get("name") or "",
+                "Color":    p.get("color") or "",
+                "List Price": orig,
+                "Currency": p.get("currency") or "",
+                "Customer Price": cust,
+                "Qty":      int(default_qty),
             })
-        st.dataframe(rows, use_container_width=True)
+        df = pd.DataFrame(preview_rows)
+        edited = st.data_editor(df, use_container_width=True,
+                                column_config={"Qty": st.column_config.NumberColumn(min_value=1, step=1)},
+                                hide_index=True)
 
-        with st.spinner("Building Excel…"):
-            excel_bytes = xl.build_excel(products, discount, include_images=include_imgs)
-        st.download_button("⬇️ Download Excel Quote", data=excel_bytes,
-                           file_name="customer_quote.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        # Attach qty and discount to each product before export
+        export_products = []
+        for i, p in enumerate(products):
+            qty = int(edited.iloc[i]["Qty"]) if i < len(edited) else int(default_qty)
+            p["_qty"]      = qty
+            p["_discount"] = discount
+            export_products.append(p)
+
+        order_info = {
+            "order_number":   order_number   or None,
+            "customer_name":  customer_name  or None,
+            "contact_person": contact_person or None,
+            "phone":          phone          or None,
+        }
+
+        with st.spinner("Filling order template…"):
+            excel_bytes = xl.build_excel_from_template(export_products, order_info=order_info)
+
+        st.download_button(
+            "⬇️ Download Filled Order Template",
+            data=excel_bytes,
+            file_name="order_quote.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
