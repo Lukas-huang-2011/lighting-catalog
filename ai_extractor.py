@@ -1,39 +1,33 @@
 """
-AI extraction using Google Gemini Flash via OpenRouter.
-Free model, excellent at reading structured PDF tables.
+AI extraction using Google Gemini API directly.
+Free tier: 1,500 requests/day, no credit card needed.
 """
 
 import json
 import base64
 import io
 from PIL import Image
-from openai import OpenAI
+import google.generativeai as genai
+import streamlit as st
 
-# Primary model: Gemini Flash (free, excellent vision)
-# Fallback: Qwen VL (also free tier)
-PRIMARY_MODEL = "google/gemini-2.0-flash-001"
-FALLBACK_MODEL = "anthropic/claude-3-haiku"
+MODEL_NAME = "gemini-2.0-flash"
 
 
-def get_client(api_key: str) -> OpenAI:
-    return OpenAI(
-        base_url="https://openrouter.ai/api/v1",
-        api_key=api_key,
-        default_headers={"HTTP-Referer": "https://lighting-catalog.streamlit.app"}
-    )
+def get_client():
+    api_key = st.secrets.get("GEMINI_API_KEY", "")
+    if not api_key:
+        st.error("GEMINI_API_KEY not found in Streamlit secrets. Add it from aistudio.google.com")
+        st.stop()
+    genai.configure(api_key=api_key)
+    return genai.GenerativeModel(MODEL_NAME)
 
 
-def image_to_base64(image: Image.Image) -> str:
-    buf = io.BytesIO()
-    image.save(buf, format="PNG")
-    return base64.b64encode(buf.getvalue()).decode()
+def image_to_pil(image: Image.Image) -> Image.Image:
+    return image.convert("RGB")
 
 
 def _parse_json_response(content: str) -> list:
-    """Try to extract a JSON array from the model response."""
     content = content.strip()
-
-    # Strip markdown code fences
     if "```" in content:
         for part in content.split("```"):
             part = part.strip().lstrip("json").strip()
@@ -43,16 +37,12 @@ def _parse_json_response(content: str) -> list:
                     return result
             except Exception:
                 continue
-
-    # Try direct parse
     try:
         result = json.loads(content)
         if isinstance(result, list):
             return result
     except Exception:
         pass
-
-    # Try finding array inside the text
     start = content.find("[")
     end = content.rfind("]")
     if start != -1 and end != -1:
@@ -62,27 +52,7 @@ def _parse_json_response(content: str) -> list:
                 return result
         except Exception:
             pass
-
     return []
-
-
-def _call_model(client: OpenAI, model: str, img_b64: str, prompt: str) -> tuple[str, str]:
-    """Call a model, return (raw_response_text, error_message)."""
-    try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
-                    {"type": "text", "text": prompt}
-                ]
-            }],
-            max_tokens=4000
-        )
-        return response.choices[0].message.content.strip(), ""
-    except Exception as e:
-        return "", str(e)
 
 
 EXTRACTION_PROMPT = """You are reading a page from a lighting product catalog or price list.
@@ -112,74 +82,34 @@ Fields per entry (null if missing):
 - extra_fields: object with ip_rating, dimming, voltage, driver, structure, diffuser,
   net_weight, gross_weight, package_nr, package_dimension, etc.
 
-Return ONLY a valid JSON array. Example for this type of page:
-[
-  {"codes":["40224/BI"],"name":"CABRIOLETTE Body lamp","color":"White Polished RAL 9003","light_source":"7,5W 1110lm","cct":"2700K","price":3120.00,"currency":"RMB","wattage":"7.5W","dimensions":"Ø15,5 H28cm","description":"Direct Light, Adjustable Light, Integrated LED","extra_fields":{"voltage":"24V","driver":"Excluded External","structure":"Aluminium","diffuser":"Methacrylate 040","net_weight":"1,6 Kg","package_dimension":"20x32x20 cm"}},
-  {"codes":["40224/NE"],"name":"CABRIOLETTE Body lamp","color":"Black Polished RAL 9005","price":3120.00,"currency":"RMB",...}
-]"""
+Return ONLY a valid JSON array. No explanation, no markdown, just the JSON array."""
 
 
-def extract_products_from_page(client: OpenAI, page_image: Image.Image, page_num: int) -> list:
-    """Extract all product rows from a PDF page. Returns list of product dicts."""
-    img_b64 = image_to_base64(page_image)
-
-    # Try primary model first
-    raw, error = _call_model(client, PRIMARY_MODEL, img_b64, EXTRACTION_PROMPT)
-
-    if error or not raw:
-        # Try fallback model
-        raw, error = _call_model(client, FALLBACK_MODEL, img_b64, EXTRACTION_PROMPT)
-
-    if error:
-        print(f"Page {page_num} — both models failed: {error}")
+def extract_products_from_page(client, page_image: Image.Image, page_num: int) -> list:
+    try:
+        response = client.generate_content([EXTRACTION_PROMPT, page_image])
+        content = response.text.strip()
+        return _parse_json_response(content)
+    except Exception as e:
+        print(f"Page {page_num} extraction error: {e}")
         return []
 
-    result = _parse_json_response(raw)
-    return result
 
-
-def extract_products_debug(client: OpenAI, page_image: Image.Image) -> dict:
-    """
-    Debug version: returns raw response + parsed result + any errors.
-    Used by the Debug & Test page.
-    """
-    img_b64 = image_to_base64(page_image)
-
-    out = {"primary_model": PRIMARY_MODEL, "fallback_model": FALLBACK_MODEL,
-           "raw_response": "", "parsed": [], "error": ""}
-
-    raw, error = _call_model(client, PRIMARY_MODEL, img_b64, EXTRACTION_PROMPT)
-    out["raw_response"] = raw
-    out["error"] = error
-
-    if error or not raw:
-        raw2, error2 = _call_model(client, FALLBACK_MODEL, img_b64, EXTRACTION_PROMPT)
-        out["raw_response_fallback"] = raw2
-        out["error_fallback"] = error2
-        raw = raw2
-
-    if raw:
-        out["parsed"] = _parse_json_response(raw)
-
+def extract_products_debug(client, page_image: Image.Image) -> dict:
+    out = {"model": MODEL_NAME, "raw_response": "", "parsed": [], "error": ""}
+    try:
+        response = client.generate_content([EXTRACTION_PROMPT, page_image])
+        out["raw_response"] = response.text.strip()
+        out["parsed"] = _parse_json_response(out["raw_response"])
+    except Exception as e:
+        out["error"] = str(e)
     return out
 
 
-def describe_image(client: OpenAI, image: Image.Image) -> str:
-    """Generate a text description of a product image for semantic search."""
-    img_b64 = image_to_base64(image)
-    prompt = """Describe this lighting product for matching. Include type, shape, materials, colors, style, any visible codes. Be specific and concise."""
+def describe_image(client, image: Image.Image) -> str:
     try:
-        response = client.chat.completions.create(
-            model=PRIMARY_MODEL,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
-                    {"type": "text", "text": prompt}
-                ]
-            }],
-            max_tokens=300
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
+        prompt = "Describe this lighting product briefly: type, shape, color, style, any visible codes."
+        response = client.generate_content([prompt, image])
+        return response.text.strip()
+    except Exception:
         return ""
