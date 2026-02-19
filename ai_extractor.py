@@ -10,8 +10,8 @@ import requests
 from PIL import Image
 import streamlit as st
 
-MODEL = "gemini-1.5-flash"
-API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent"
+MODEL = "gemini-1.5-flash-latest"
+API_URL = f"https://generativelanguage.googleapis.com/v1/models/{MODEL}:generateContent"
 
 
 def get_client():
