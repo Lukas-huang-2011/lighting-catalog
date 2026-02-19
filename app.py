@@ -56,14 +56,17 @@ def _render_cards(products: list, show_similarity: bool = False):
             else:
                 st.caption("No image")
         with col_info:
-            # Brand + codes row
+            # Brand + codes + page row
             pdf_info = p.get("pdfs") or {}
             brand = extract_brand(pdf_info.get("name") or "")
             codes = p.get("codes") or []
+            page_num = p.get("page_number")
             tags = ""
             if brand:
                 tags += f'<span class="brand-tag">📦 {brand}</span> '
             tags += " ".join(f'<span class="badge">{c}</span>' for c in codes)
+            if page_num is not None:
+                tags += f' <span style="color:#888;font-size:0.8em;">· PDF page {page_num + 1}</span>'
             st.markdown(tags, unsafe_allow_html=True)
 
             if show_similarity and p.get("similarity"):
@@ -158,28 +161,36 @@ if page == "📤 Upload & Extract":
                 pct = (page_num + 1) / page_count
                 progress.progress(pct, text=f"Page {page_num+1} / {page_count}…")
 
+                # 1. Extract products (4 AI calls per page via section splitting)
                 products = ai.extract_products_from_page(ai_client, page_img, page_num)
-                log.caption(f"Page {page_num+1}: found {len(products)} product(s) → total so far: {total_products + len(products)}")
+                log.caption(f"Page {page_num+1}: {len(products)} product(s) → total: {total_products + len(products)}")
 
-                page_images = []
-                if extract_images_flag:
+                # 2. Upload images ONCE per page (not once per product)
+                #    No describe_image — that wastes API quota and causes rate limiting
+                page_image_records = []  # list of (url, hash)
+                if extract_images_flag and products:
                     try:
-                        page_images = pdf.extract_images_from_page(pdf_bytes, page_num)
+                        raw_images = pdf.extract_images_from_page(pdf_bytes, page_num)
+                        for pil_img in raw_images[:2]:  # max 2 images per page
+                            try:
+                                img_url = db.upload_image(client, pil_img)
+                                img_hash = imgs.compute_hash(pil_img)
+                                page_image_records.append((img_url, img_hash))
+                            except Exception as e:
+                                errors.append(f"Image upload p{page_num+1}: {e}")
                     except Exception as e:
-                        errors.append(f"Page {page_num+1} image extract: {e}")
+                        errors.append(f"Image extract p{page_num+1}: {e}")
 
+                # 3. Save each product and link the page images to it
                 for prod in products:
                     try:
                         prod_id = db.save_product(client, pdf_id, prod, page_num)
                         total_products += 1
-                        for pil_img in page_images[:3]:
+                        for img_url, img_hash in page_image_records:
                             try:
-                                img_url = db.upload_image(client, pil_img)
-                                img_hash = imgs.compute_hash(pil_img)
-                                description = ai.describe_image(ai_client, pil_img)
-                                db.save_product_image(client, prod_id, img_url, img_hash, description)
+                                db.save_product_image(client, prod_id, img_url, img_hash, "")
                             except Exception as e:
-                                errors.append(f"Image upload p{page_num+1}: {e}")
+                                errors.append(f"Image link p{page_num+1}: {e}")
                     except Exception as e:
                         errors.append(f"Save product p{page_num+1}: {e}")
 
@@ -239,18 +250,17 @@ elif page == "🔍 Search by Code":
     st.header("🔍 Search by Product Code")
     st.caption("Results appear as you type — no need to press Enter.")
 
-    query = st.text_input("Start typing a product code…", placeholder="e.g. 21019 or AVRO")
+    query = st.text_input("Start typing a product code or name…",
+                          placeholder="e.g. 21019  or  AVRO  or  Martinelli")
 
     if query and len(query) >= 2:
-        with st.spinner(""):
-            results = db.search_by_code(client, query)
-
+        results = db.search_by_code(client, query)
         if not results:
             st.warning(f"No products found matching **{query}**")
         else:
-            st.success(f"Found **{len(results)}** result(s) for **{query}**")
+            st.success(f"**{len(results)}** result(s) for **{query}**")
             _render_cards(results)
-    elif query and len(query) < 2:
+    elif query:
         st.caption("Keep typing…")
 
 
