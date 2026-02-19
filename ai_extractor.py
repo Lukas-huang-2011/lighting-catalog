@@ -129,31 +129,40 @@ def _call_best(api_key: str, image: Image.Image, prompt: str) -> tuple:
 
 PROMPT = """You are reading a page from a lighting product catalog or price list.
 
-Extract ONE entry for each product CODE (article number) visible on this page.
-Each row in the price table = one code with its own color and price.
+YOUR TASK: Extract EVERY row that has a product code (article number) on this page.
+Scan the ENTIRE page from top to bottom — do NOT stop after the first product group.
+
+WHAT TO EXTRACT:
+1. MAIN product rows — each color/variant row under a product family header
+2. ACCESSORY rows — rows listed under "Accessories" or "Accessori" sections (they have their own codes and prices)
+3. MULTIPLE product families — if the page has e.g. "AVRO Studio Natural" AND "AVRO Junior", extract ALL rows from BOTH families
+4. Every single row with a code = one JSON entry
 
 RULES:
-- One JSON object per code/row
+- One JSON object per code/row — never skip a row that has a code
 - Prices are plain numbers, no currency symbol (e.g. 3120,00 or 3120.00)
-- Find the currency label in column HEADER (e.g. "RMBexcl. VAT" means currency="RMB")
+- Find the currency label in the column HEADER (e.g. "RMBexcl. VAT" → currency="RMB")
 - Convert comma decimals to dots: 3120,00 → 3120.00
-- Include accessories with codes and prices
-- If no product codes on this page (index, cover), return []
+- For accessory rows: set name = accessory description (e.g. "Canopy", "Suspension kit"), color = null unless listed
+- For accessory rows: inherit currency from the same page header
+- If a product family has 8 color variants AND 6 accessory rows = 14 total entries for that family
+- If the page has 2 product families each with variants + accessories = extract ALL of them
+- If no product codes on this page (index page, cover, intro text), return []
 
 Fields per entry (null if not found):
 - codes: ["ONE_CODE"]
-- name: product family name (e.g. "CABRIOLETTE Body lamp")
-- description: emission type, light source description
-- color: color name + RAL (e.g. "White Polished RAL 9003")
-- light_source: full text (e.g. "7.5W 1110lm Integrated LED")
-- cct: color temperature (e.g. "2700K")
+- name: product family name (e.g. "AVRO Studio Natural") OR accessory name (e.g. "Canopy white")
+- description: emission type, mounting type, or accessory description
+- color: color name (e.g. "Arancio", "Bianco") — null for most accessories
+- light_source: full text (e.g. "7.5W 1110lm Integrated LED") — null for accessories
+- cct: color temperature (e.g. "2700K", "3000K") — null for accessories
 - dimensions: size string (e.g. "Ø15.5 H28 cm")
-- wattage: watts only (e.g. "7.5W")
+- wattage: watts only (e.g. "7.5W") — null for accessories
 - price: number dot decimal (e.g. 3120.00)
 - currency: from column header (e.g. "RMB", "EUR", "USD")
 - extra_fields: {ip_rating, dimming, voltage, driver, structure, diffuser, net_weight, gross_weight, package_dimension}
 
-Return ONLY a valid JSON array. No explanation, no markdown."""
+Return ONLY a valid JSON array. No explanation, no markdown. Include EVERY code row."""
 
 
 def extract_products_from_page(api_key: str, page_image: Image.Image, page_num: int) -> list:
