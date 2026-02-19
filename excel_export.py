@@ -1,108 +1,145 @@
-"""Generate Excel files for customer quotes."""
+"""Fill the order_template.xlsx with product data from the database."""
 
 import io
-import requests
-from PIL import Image
+import os
+import datetime
+from copy import copy
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
-from openpyxl.drawing.image import Image as XLImage
 
 
-def _fetch_image(url: str):
-    try:
-        r = requests.get(url, timeout=5)
-        return Image.open(io.BytesIO(r.content)).convert("RGB")
-    except Exception:
-        return None
+TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "order_template.xlsx")
+
+# Column positions in the template (1-based)
+COL_SEQ    = 1   # 序号
+COL_BRAND  = 2   # 品牌
+COL_CODE   = 3   # 编号
+COL_NAME   = 4   # 名称
+COL_IMAGE  = 5   # 图片
+COL_COLOR  = 6   # 颜色
+COL_TYPE   = 7   # 种类
+COL_DIM    = 8   # 尺寸 (cm)
+COL_LIGHT  = 9   # 光源参数
+COL_DELIV  = 10  # 到货时间
+COL_PRICE  = 11  # 零售单价
+COL_QTY    = 12  # 数量
+COL_TOTAL  = 13  # 合计  (=Kn*Ln)
+COL_DISC   = 14  # 折扣
+COL_FINAL  = 15  # 折后价 (=Mn*Nn)
+
+PRODUCT_START_ROW = 9  # First data row in template
 
 
-def build_excel(products: list, discount: float, include_images: bool = True) -> bytes:
-    wb = openpyxl.Workbook()
+def _extract_brand(pdf_name: str) -> str:
+    """Turn a PDF filename into a readable brand name."""
+    if not pdf_name:
+        return ""
+    name = pdf_name.replace(".pdf", "").replace(".PDF", "")
+    return name.replace("_", " ").replace("-", " ").title()
+
+
+def _copy_row_style(ws, src_row: int, dst_row: int):
+    """Copy cell formatting from one row to another."""
+    for col in range(1, ws.max_column + 1):
+        src = ws.cell(row=src_row, column=col)
+        dst = ws.cell(row=dst_row, column=col)
+        if src.has_style:
+            dst.font      = copy(src.font)
+            dst.fill      = copy(src.fill)
+            dst.border    = copy(src.border)
+            dst.alignment = copy(src.alignment)
+            dst.number_format = src.number_format
+
+
+def build_excel_from_template(
+    products: list,
+    order_info: dict | None = None,
+) -> bytes:
+    """
+    Fill order_template.xlsx with product rows and return the file as bytes.
+
+    order_info keys (all optional):
+      order_number, date, customer_name, contact_person, phone
+    """
+    if order_info is None:
+        order_info = {}
+
+    n = len(products)
+    if n == 0:
+        # Return blank template
+        with open(TEMPLATE_PATH, "rb") as f:
+            return f.read()
+
+    wb = openpyxl.load_workbook(TEMPLATE_PATH)
     ws = wb.active
-    ws.title = "Quote"
 
-    header_fill = PatternFill("solid", fgColor="1F3864")
-    header_font = Font(bold=True, color="FFFFFF", size=11)
-    alt_fill = PatternFill("solid", fgColor="EBF0FA")
-    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    left = Alignment(horizontal="left", vertical="center", wrap_text=True)
-    thin = Border(
-        left=Side(style="thin"), right=Side(style="thin"),
-        top=Side(style="thin"), bottom=Side(style="thin")
+    # ── 1. Fill order header ──────────────────────────────────────────────────
+    if order_info.get("order_number"):
+        ws["C3"] = order_info["order_number"]
+    if order_info.get("date"):
+        ws["C4"] = order_info["date"]
+    else:
+        ws["C4"] = datetime.date.today()
+    if order_info.get("customer_name"):
+        ws["C5"] = order_info["customer_name"]
+    if order_info.get("contact_person"):
+        ws["C6"] = order_info["contact_person"]
+    if order_info.get("phone"):
+        ws["E6"] = order_info["phone"]
+
+    # ── 2. Insert extra product rows if needed ────────────────────────────────
+    if n > 1:
+        ws.insert_rows(PRODUCT_START_ROW + 1, amount=n - 1)
+        for i in range(1, n):
+            _copy_row_style(ws, PRODUCT_START_ROW, PRODUCT_START_ROW + i)
+
+    # ── 3. Write product rows ─────────────────────────────────────────────────
+    for i, product in enumerate(products):
+        row = PRODUCT_START_ROW + i
+        codes    = product.get("codes") or []
+        ef       = product.get("extra_fields") or {}
+        pdf_info = product.get("pdfs") or {}
+        brand    = _extract_brand(pdf_info.get("name") or product.get("brand") or "")
+        price    = product.get("price")
+        qty      = product.get("_qty", 1)       # quantity set by caller
+        discount = product.get("_discount", 1)  # discount set by caller
+
+        ws.cell(row=row, column=COL_SEQ).value   = i + 1
+        ws.cell(row=row, column=COL_BRAND).value = brand
+        ws.cell(row=row, column=COL_CODE).value  = ", ".join(str(c) for c in codes)
+        ws.cell(row=row, column=COL_NAME).value  = product.get("name") or ""
+        ws.cell(row=row, column=COL_COLOR).value = product.get("color") or ""
+        ws.cell(row=row, column=COL_TYPE).value  = product.get("description") or ""
+        ws.cell(row=row, column=COL_DIM).value   = product.get("dimensions") or ""
+        # Light source: combine light_source + cct + wattage if present
+        light_parts = [
+            product.get("light_source") or ef.get("light_source") or "",
+            product.get("cct") or ef.get("cct") or "",
+            product.get("wattage") or ef.get("wattage") or "",
+        ]
+        ws.cell(row=row, column=COL_LIGHT).value = "  ".join(p for p in light_parts if p)
+        ws.cell(row=row, column=COL_PRICE).value = price
+        ws.cell(row=row, column=COL_QTY).value   = qty
+        ws.cell(row=row, column=COL_TOTAL).value = f"=K{row}*L{row}"
+        ws.cell(row=row, column=COL_DISC).value  = discount
+        ws.cell(row=row, column=COL_FINAL).value = f"=M{row}*N{row}"
+
+    # ── 4. Update footer formulas ─────────────────────────────────────────────
+    last_prod  = PRODUCT_START_ROW + n - 1
+    sub_row    = last_prod + 1   # 小计
+    other_row  = last_prod + 2   # 其他费用
+    total_row  = last_prod + 3   # 应付总金额
+
+    ws.cell(row=sub_row, column=COL_QTY).value   = f"=SUM(L{PRODUCT_START_ROW}:L{last_prod})"
+    ws.cell(row=sub_row, column=COL_TOTAL).value = f"=SUM(M{PRODUCT_START_ROW}:M{last_prod})"
+
+    # 应付总金额 = sum of all discounted prices + other fees
+    ws.cell(row=total_row, column=COL_TOTAL).value = (
+        f"=ROUND(SUM(O{PRODUCT_START_ROW}:O{last_prod})+M{other_row},0)"
     )
 
-    base_cols = [
-        ("Image", 18), ("Code", 20), ("Name", 28), ("Description", 40),
-        ("Color", 18), ("Light Source", 20), ("CCT", 10),
-        ("Dimensions", 18), ("Wattage", 12),
-        ("Original Price", 16), ("Currency", 10),
-        (f"Discount ({int((1-discount)*100)}%)", 16),
-        ("Customer Price", 16), ("Catalog", 22),
-    ]
-
-    extra_keys = sorted({k for p in products for k in (p.get("extra_fields") or {}).keys()})
-    all_cols = base_cols + [(k.title(), 16) for k in extra_keys]
-
-    for col_idx, (col_name, col_width) in enumerate(all_cols, start=1):
-        cell = ws.cell(row=1, column=col_idx, value=col_name)
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = center
-        cell.border = thin
-        ws.column_dimensions[get_column_letter(col_idx)].width = col_width
-    ws.row_dimensions[1].height = 30
-    ws.freeze_panes = "A2"
-
-    for row_idx, product in enumerate(products, start=2):
-        # Image
-        if include_images:
-            images = product.get("product_images") or []
-            img_url = images[0]["image_url"] if images else None
-            if img_url:
-                pil_img = _fetch_image(img_url)
-                if pil_img:
-                    pil_img.thumbnail((100, 100))
-                    buf = io.BytesIO()
-                    pil_img.save(buf, format="PNG")
-                    buf.seek(0)
-                    xl_img = XLImage(buf)
-                    xl_img.anchor = f"A{row_idx}"
-                    ws.add_image(xl_img)
-
-        codes = product.get("codes") or []
-        ws.cell(row=row_idx, column=2, value=", ".join(codes))
-        ws.cell(row=row_idx, column=3, value=product.get("name") or "")
-        ws.cell(row=row_idx, column=4, value=product.get("description") or "")
-        ws.cell(row=row_idx, column=5, value=product.get("color") or "")
-        ws.cell(row=row_idx, column=6, value=product.get("light_source") or "")
-        ef = product.get("extra_fields") or {}
-        ws.cell(row=row_idx, column=7, value=ef.get("cct") or product.get("cct") or "")
-        ws.cell(row=row_idx, column=8, value=product.get("dimensions") or "")
-        ws.cell(row=row_idx, column=9, value=product.get("wattage") or "")
-
-        orig = product.get("price")
-        currency = product.get("currency") or ""
-        customer_price = round(orig * discount, 2) if orig else None
-        ws.cell(row=row_idx, column=10, value=orig)
-        ws.cell(row=row_idx, column=11, value=currency)
-        ws.cell(row=row_idx, column=12, value=f"× {discount}")
-        ws.cell(row=row_idx, column=13, value=customer_price)
-        ws.cell(row=row_idx, column=14, value=(product.get("pdfs") or {}).get("name") or "")
-
-        for i, key in enumerate(extra_keys, start=15):
-            ws.cell(row=row_idx, column=i, value=ef.get(key) or "")
-
-        fill = alt_fill if row_idx % 2 == 0 else PatternFill()
-        for col_idx in range(1, len(all_cols) + 1):
-            cell = ws.cell(row=row_idx, column=col_idx)
-            if fill.fill_type:
-                cell.fill = fill
-            cell.border = thin
-            cell.alignment = center if col_idx in (1, 10, 11, 12, 13) else left
-        ws.row_dimensions[row_idx].height = 80 if include_images else 20
-
-    ws.auto_filter.ref = ws.dimensions
+    # ── 5. Save and return ────────────────────────────────────────────────────
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
