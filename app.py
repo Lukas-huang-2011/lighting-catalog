@@ -495,3 +495,77 @@ elif page == "🛠️ Debug & Test":
         else:
             st.error("❌ AI returned 0 products for this page.")
             st.info("Check the raw response above — if it's empty or shows an error, the model call is failing. If it has text but no JSON, the prompt needs adjusting.")
+
+        # ── Export extracted products to Excel right away ──────────────────────
+        if result:
+            st.divider()
+            st.subheader("📊 Export these products to Excel")
+            if st.button("⬇️ Download Excel for extracted products"):
+                import excel_export as xl
+                xl_bytes = xl.build_excel_from_template(result)
+                st.download_button(
+                    label="💾 Click here to save the Excel file",
+                    data=xl_bytes,
+                    file_name="debug_extraction.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+
+    st.divider()
+    st.subheader("4. Test Excel output (sample data)")
+    st.markdown("Generates an Excel order sheet using dummy products — no PDF needed. Use this to check the template fills correctly.")
+    if st.button("📋 Generate sample Excel"):
+        import excel_export as xl
+        sample_products = [
+            {
+                "codes": ["21019/DIM/AR"],
+                "name": "AVRO Studio Natural",
+                "color": "Orange Polished RAL 2001",
+                "cct": "2700K",
+                "light_source": "7.5W 1110lm Integrated LED",
+                "dimensions": "Ø15.5 H28 cm",
+                "price": 14469.00,
+                "currency": "RMB",
+                "pdfs": {"name": "Martinelli_luce_2025.pdf"},
+            },
+            {
+                "codes": ["21019/DIM/BI"],
+                "name": "AVRO Studio Natural",
+                "color": "White Embossed RAL 9003",
+                "cct": "2700K",
+                "light_source": "7.5W 1110lm Integrated LED",
+                "dimensions": "Ø15.5 H28 cm",
+                "price": 13325.00,
+                "currency": "RMB",
+                "pdfs": {"name": "Martinelli_luce_2025.pdf"},
+            },
+            {
+                "codes": ["21019/DIM/NE"],
+                "name": "AVRO Studio Natural",
+                "color": "Black Embossed RAL 9005",
+                "cct": "2700K",
+                "light_source": "7.5W 1110lm Integrated LED",
+                "dimensions": "Ø15.5 H28 cm",
+                "price": 13325.00,
+                "currency": "RMB",
+                "pdfs": {"name": "Martinelli_luce_2025.pdf"},
+            },
+            {
+                "codes": ["40189/BI"],
+                "name": "Multisocket with cable",
+                "color": "White",
+                "price": 897.00,
+                "currency": "RMB",
+                "pdfs": {"name": "Martinelli_luce_2025.pdf"},
+            },
+        ]
+        xl_bytes = xl.build_excel_from_template(
+            sample_products,
+            order_info={"order_number": "TEST-001", "customer_name": "Sample Customer"},
+        )
+        st.success("✅ Excel generated with 4 sample products!")
+        st.download_button(
+            label="💾 Download sample Excel",
+            data=xl_bytes,
+            file_name="sample_order.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
