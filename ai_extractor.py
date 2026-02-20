@@ -121,7 +121,7 @@ def _call(api_key: str, model: str, image: Image.Image, prompt: str) -> tuple:
                 {"type": "text", "text": prompt},
             ],
         }],
-        "max_tokens": 2048,
+        "max_tokens": 4096,
         "temperature": 0.1,
         "stream": False,
     }
@@ -169,11 +169,13 @@ WHAT TO EXTRACT:
 4. Every single row with a code = one JSON entry, no exceptions
 
 CRITICAL NAME RULE:
-- Product catalogs show a FAMILY NAME in a bold header (e.g. "AVRO", "SPIDER", "MARBLE")
-- Below that header are many rows with codes — ALL those rows share that same family name
-- If this image shows rows WITHOUT a visible header (it was cut off above), look at the product codes to guess the family name (e.g. code "21019/DIM/AR" → the numeric part "21019" is likely the model, check nearby rows for a header)
-- NEVER leave name as null or "?" — use the family name from the header, or use the code prefix as the name (e.g. "21019" or "AVRO")
-- For accessories, use the accessory description as the name
+- Product catalogs show a FAMILY NAME in a bold header above rows of variants (e.g. "AVRO Studio Natural", "SPIDER LED", "MARBLE 40")
+- The full name may be 2–4 words — copy it EXACTLY and COMPLETELY (e.g. "AVRO Studio Natural" NOT just "AVRO")
+- ALL rows below that header share that EXACT same full family name until a new header appears
+- If the header is cut off (not visible in this image), look at the codes: find the nearest name visible anywhere and use it; or use the code prefix (e.g. "21019")
+- NEVER shorten the name — use every word that appears in the header
+- NEVER leave name as null or "?" — always put something
+- For accessories, use the full accessory description as the name
 
 RULES:
 - One JSON object per code/row
@@ -185,7 +187,7 @@ RULES:
 
 Fields to include (only when value exists):
 - codes: ["CODE"] — required
-- name: product family name (e.g. "AVRO") or accessory description — ALWAYS required, never "?"
+- name: FULL product family name (e.g. "AVRO Studio Natural", "SPIDER LED 40") — ALWAYS required, use every word, never "?"
 - color: color name (e.g. "Arancio", "Bianco")
 - light_source: e.g. "7.5W 1110lm Integrated LED"
 - cct: e.g. "2700K"
