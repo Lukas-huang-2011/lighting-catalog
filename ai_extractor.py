@@ -5,6 +5,7 @@ OpenAI-compatible endpoint.
 """
 
 import json
+import re
 import base64
 import io
 import time
@@ -102,6 +103,31 @@ def _parse_json(content: str) -> list:
                 pass
 
     return []
+
+
+_CCT_RE = re.compile(r"^(\d{3,4}[Kk])\s+(.+)$")
+
+def _clean_products(products: list) -> list:
+    """Strip CCT values (e.g. '2700K') that the AI accidentally puts inside codes."""
+    cleaned = []
+    for p in products:
+        p = dict(p)
+        new_codes = []
+        found_cct = p.get("cct", "")
+        for code in p.get("codes", []):
+            m = _CCT_RE.match(str(code).strip())
+            if m:
+                if not found_cct:
+                    found_cct = m.group(1)
+                new_codes.append(m.group(2).strip())
+            else:
+                new_codes.append(code)
+        if new_codes:
+            p["codes"] = new_codes
+        if found_cct:
+            p["cct"] = found_cct
+        cleaned.append(p)
+    return cleaned
 
 
 def _call(api_key: str, model: str, image: Image.Image, prompt: str) -> tuple:
@@ -219,7 +245,7 @@ def _extract_section(api_key: str, section_image: Image.Image) -> list:
     text, error, _ = _call_best(api_key, section_image, PROMPT)
     if error:
         return []
-    return _parse_json(text)
+    return _clean_products(_parse_json(text))
 
 
 def _dedup(products: list) -> list:
@@ -258,10 +284,10 @@ def extract_products_debug(api_key: str, page_image: Image.Image) -> dict:
     time.sleep(3)
     t4, e4, _  = _call_best(api_key, s4, PROMPT)
 
-    p1 = _parse_json(t1) if t1 else []
-    p2 = _parse_json(t2) if t2 else []
-    p3 = _parse_json(t3) if t3 else []
-    p4 = _parse_json(t4) if t4 else []
+    p1 = _clean_products(_parse_json(t1)) if t1 else []
+    p2 = _clean_products(_parse_json(t2)) if t2 else []
+    p3 = _clean_products(_parse_json(t3)) if t3 else []
+    p4 = _clean_products(_parse_json(t4)) if t4 else []
     all_products = _dedup(p1 + p2 + p3 + p4)
 
     raw = (
