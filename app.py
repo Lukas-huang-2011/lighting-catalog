@@ -460,112 +460,82 @@ elif page == "🛠️ Debug & Test":
 
     st.divider()
     st.subheader("3. Test AI extraction on one page")
-    test_pdf = st.file_uploader("Upload the PDF to test", type=["pdf"], key="debug_pdf")
-    test_page = st.number_input("Page number to test (0 = first page, try 11 for product pages)", min_value=0, value=11)
 
-    if test_pdf and st.button("🤖 Run test extraction on this page"):
+    # ── Shared PDF uploader — used by sections 3, 4 and 5 ─────────────────────
+    test_pdf  = st.file_uploader("Upload the PDF to test", type=["pdf"], key="debug_pdf")
+    test_page = st.number_input("Page number (0 = first page, try 11 for product pages)", min_value=0, value=11)
 
+    if test_pdf:
         pdf_bytes = test_pdf.read()
         page_count = pdf.get_page_count(pdf_bytes)
-        page_num = min(int(test_page), page_count - 1)
+        page_num   = min(int(test_page), page_count - 1)
 
-        st.info(f"Rendering page {page_num + 1} of {page_count}…")
+        # Render & show the page image once (shared)
         page_img = pdf.render_single_page(pdf_bytes, page_num, dpi=100)
-        st.image(page_img, caption=f"Page {page_num + 1} as seen by AI", use_container_width=True)
+        st.image(page_img, caption=f"Page {page_num + 1} of {page_count}", use_container_width=True)
 
-        st.info("Sending to Zhipu AI (GLM-4V-Flash)…")
-        ai_client = ai.get_client()
-        debug_result = ai.extract_products_debug(ai_client, page_img)
+        # ── 3a. AI product extraction ──────────────────────────────────────────
+        if st.button("🤖 Run AI product extraction"):
+            ai_client = ai.get_client()
+            with st.spinner("Sending to Zhipu AI (GLM-4V-Flash) — takes ~15 s…"):
+                debug_result = ai.extract_products_debug(ai_client, page_img)
 
-        # Show errors if any
-        if debug_result.get("error"):
-            st.error(f"❌ Primary model error: {debug_result['error']}")
+            if debug_result.get("error"):
+                st.error(f"❌ Error: {debug_result['error']}")
 
-        # Show raw response
-        with st.expander("📄 Raw AI response (click to inspect)"):
-            st.text(debug_result.get("raw_response") or "No response received")
+            with st.expander("📄 Raw AI response"):
+                st.text(debug_result.get("raw_response") or "No response")
 
-        # Show parsed results
-        result = debug_result.get("parsed", [])
-        if result:
-            st.success(f"✅ AI found **{len(result)} product(s)** on this page!")
-            for i, prod in enumerate(result):
-                with st.expander(f"Product {i+1}: {prod.get('name','?')} — {prod.get('codes',[])}"):
-                    st.json(prod)
+            result = debug_result.get("parsed", [])
+            if result:
+                st.success(f"✅ Found **{len(result)} product(s)**")
+                for i, prod in enumerate(result):
+                    with st.expander(f"Product {i+1}: {prod.get('name','?')} — {prod.get('codes',[])}"):
+                        st.json(prod)
+                st.session_state["debug_products"]  = result
+                st.session_state["debug_pdf_name"]  = test_pdf.name
+            else:
+                st.error("❌ 0 products found. Check raw response above.")
+
+        st.divider()
+        # ── 4. Image extraction test ───────────────────────────────────────────
+        st.subheader("4. Test image extraction on this page")
+        if st.button("🖼️ Extract images from this page"):
+            raw_images = pdf.extract_images_from_page(pdf_bytes, page_num)
+            if raw_images:
+                st.success(f"✅ Found **{len(raw_images)} image(s)** on page {page_num + 1}")
+                cols = st.columns(min(len(raw_images), 4))
+                for idx, pil_img in enumerate(raw_images):
+                    cols[idx % 4].image(pil_img, caption=f"Image {idx+1}  ({pil_img.width}×{pil_img.height}px)", use_container_width=True)
+            else:
+                st.warning("⚠️ No embedded images found on this page. The catalog may use vector graphics instead of raster images.")
+
+        st.divider()
+        # ── 5. Excel export test ───────────────────────────────────────────────
+        st.subheader("5. Test Excel export")
+        products_for_xl = st.session_state.get("debug_products", [])
+        pdf_name_for_xl = st.session_state.get("debug_pdf_name", "")
+
+        if products_for_xl:
+            st.info(f"Using **{len(products_for_xl)} products** extracted from '{pdf_name_for_xl}' in section 3 above.")
         else:
-            st.error("❌ AI returned 0 products for this page.")
-            st.info("Check the raw response above — if it's empty or shows an error, the model call is failing. If it has text but no JSON, the prompt needs adjusting.")
+            st.info("Run **section 3 AI extraction** first — the products found there will be used for the Excel export.")
 
-        # ── Export extracted products to Excel right away ──────────────────────
-        if result:
-            st.divider()
-            st.subheader("📊 Export these products to Excel")
-            if st.button("⬇️ Download Excel for extracted products"):
-                import excel_export as xl
-                xl_bytes = xl.build_excel_from_template(result)
-                st.download_button(
-                    label="💾 Click here to save the Excel file",
-                    data=xl_bytes,
-                    file_name="debug_extraction.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
-
-    st.divider()
-    st.subheader("4. Test Excel output (sample data)")
-    st.markdown("Generates an Excel order sheet using dummy products — no PDF needed. Use this to check the template fills correctly.")
-    if st.button("📋 Generate sample Excel"):
-        import excel_export as xl
-        sample_products = [
-            {
-                "codes": ["21019/DIM/AR"],
-                "name": "AVRO Studio Natural",
-                "color": "Orange Polished RAL 2001",
-                "cct": "2700K",
-                "light_source": "7.5W 1110lm Integrated LED",
-                "dimensions": "Ø15.5 H28 cm",
-                "price": 14469.00,
-                "currency": "RMB",
-                "pdfs": {"name": "Martinelli_luce_2025.pdf"},
-            },
-            {
-                "codes": ["21019/DIM/BI"],
-                "name": "AVRO Studio Natural",
-                "color": "White Embossed RAL 9003",
-                "cct": "2700K",
-                "light_source": "7.5W 1110lm Integrated LED",
-                "dimensions": "Ø15.5 H28 cm",
-                "price": 13325.00,
-                "currency": "RMB",
-                "pdfs": {"name": "Martinelli_luce_2025.pdf"},
-            },
-            {
-                "codes": ["21019/DIM/NE"],
-                "name": "AVRO Studio Natural",
-                "color": "Black Embossed RAL 9005",
-                "cct": "2700K",
-                "light_source": "7.5W 1110lm Integrated LED",
-                "dimensions": "Ø15.5 H28 cm",
-                "price": 13325.00,
-                "currency": "RMB",
-                "pdfs": {"name": "Martinelli_luce_2025.pdf"},
-            },
-            {
-                "codes": ["40189/BI"],
-                "name": "Multisocket with cable",
-                "color": "White",
-                "price": 897.00,
-                "currency": "RMB",
-                "pdfs": {"name": "Martinelli_luce_2025.pdf"},
-            },
-        ]
-        xl_bytes = xl.build_excel_from_template(
-            sample_products,
-            order_info={"order_number": "TEST-001", "customer_name": "Sample Customer"},
-        )
-        st.success("✅ Excel generated with 4 sample products!")
-        st.download_button(
-            label="💾 Download sample Excel",
-            data=xl_bytes,
-            file_name="sample_order.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+        if st.button("📊 Generate Excel from extracted products", disabled=not products_for_xl):
+            # Add the pdf name so brand shows correctly
+            for p in products_for_xl:
+                if not p.get("pdfs"):
+                    p["pdfs"] = {"name": pdf_name_for_xl}
+            xl_bytes = xl.build_excel_from_template(
+                products_for_xl,
+                order_info={"order_number": "DEBUG-001"},
+            )
+            st.success(f"✅ Excel generated with {len(products_for_xl)} products!")
+            st.download_button(
+                label="💾 Download Excel",
+                data=xl_bytes,
+                file_name="debug_extraction.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+    else:
+        st.info("⬆️ Upload a PDF above to unlock sections 3, 4 and 5.")
