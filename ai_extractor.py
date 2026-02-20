@@ -121,7 +121,7 @@ def _call(api_key: str, model: str, image: Image.Image, prompt: str) -> tuple:
                 {"type": "text", "text": prompt},
             ],
         }],
-        "max_tokens": 4096,
+        "max_tokens": 2048,
         "temperature": 0.1,
         "stream": False,
     }
