@@ -474,68 +474,126 @@ elif page == "🛠️ Debug & Test":
         page_img = pdf.render_single_page(pdf_bytes, page_num, dpi=100)
         st.image(page_img, caption=f"Page {page_num + 1} of {page_count}", use_container_width=True)
 
-        # ── 3a. AI product extraction ──────────────────────────────────────────
+        # ── 3. AI product extraction ───────────────────────────────────────────
         if st.button("🤖 Run AI product extraction"):
             ai_client = ai.get_client()
-            with st.spinner("Sending to Zhipu AI (GLM-4V-Flash) — takes ~15 s…"):
+            with st.spinner("Sending to Zhipu AI — takes ~15 s…"):
                 debug_result = ai.extract_products_debug(ai_client, page_img)
-
             if debug_result.get("error"):
                 st.error(f"❌ Error: {debug_result['error']}")
-
             with st.expander("📄 Raw AI response"):
                 st.text(debug_result.get("raw_response") or "No response")
-
             result = debug_result.get("parsed", [])
             if result:
                 st.success(f"✅ Found **{len(result)} product(s)**")
                 for i, prod in enumerate(result):
                     with st.expander(f"Product {i+1}: {prod.get('name','?')} — {prod.get('codes',[])}"):
                         st.json(prod)
-                st.session_state["debug_products"]  = result
-                st.session_state["debug_pdf_name"]  = test_pdf.name
+                st.session_state["debug_products"] = result
+                st.session_state["debug_pdf_name"] = test_pdf.name
             else:
                 st.error("❌ 0 products found. Check raw response above.")
 
         st.divider()
-        # ── 4. Image extraction test ───────────────────────────────────────────
+        # ── 4. Image extraction ────────────────────────────────────────────────
         st.subheader("4. Test image extraction on this page")
-        if st.button("🖼️ Extract images from this page"):
+        st.markdown("Extracts product photos from the page. For catalogs with vector illustrations (not real photos), it crops the left column where product drawings usually are.")
+
+        if st.button("🖼️ Extract product images"):
             raw_images = pdf.extract_images_from_page(pdf_bytes, page_num)
             if raw_images:
-                st.success(f"✅ Found **{len(raw_images)} image(s)** on page {page_num + 1}")
+                st.success(f"✅ Found **{len(raw_images)} image(s)**")
+                st.session_state["debug_images"] = raw_images
                 cols = st.columns(min(len(raw_images), 4))
                 for idx, pil_img in enumerate(raw_images):
-                    cols[idx % 4].image(pil_img, caption=f"Image {idx+1}  ({pil_img.width}×{pil_img.height}px)", use_container_width=True)
+                    cols[idx % 4].image(
+                        pil_img,
+                        caption=f"Image {idx + 1}  ({pil_img.width}×{pil_img.height}px)",
+                        use_container_width=True,
+                    )
+                st.info("These images will be embedded in the Excel 图片 column in section 5. One image can cover multiple products — assign which image goes to which product in section 5.")
             else:
-                st.warning("⚠️ No embedded images found on this page. The catalog may use vector graphics instead of raster images.")
+                st.warning("⚠️ No images found on this page.")
+
+        # Show previously extracted images if already in session
+        elif st.session_state.get("debug_images"):
+            raw_images = st.session_state["debug_images"]
+            st.info(f"Using {len(raw_images)} image(s) from last extraction (re-click button to refresh).")
+            cols = st.columns(min(len(raw_images), 4))
+            for idx, pil_img in enumerate(raw_images):
+                cols[idx % 4].image(pil_img, caption=f"Image {idx + 1}", use_container_width=True)
 
         st.divider()
-        # ── 5. Excel export test ───────────────────────────────────────────────
+        # ── 5. Excel export ────────────────────────────────────────────────────
         st.subheader("5. Test Excel export")
         products_for_xl = st.session_state.get("debug_products", [])
         pdf_name_for_xl = st.session_state.get("debug_pdf_name", "")
+        images_for_xl   = st.session_state.get("debug_images", [])
 
-        if products_for_xl:
-            st.info(f"Using **{len(products_for_xl)} products** extracted from '{pdf_name_for_xl}' in section 3 above.")
+        if not products_for_xl:
+            st.info("▶ Run **section 3** first to extract products, then come back here.")
         else:
-            st.info("Run **section 3 AI extraction** first — the products found there will be used for the Excel export.")
+            st.markdown(f"Using **{len(products_for_xl)} products** from section 3.")
 
-        if st.button("📊 Generate Excel from extracted products", disabled=not products_for_xl):
-            # Add the pdf name so brand shows correctly
-            for p in products_for_xl:
-                if not p.get("pdfs"):
-                    p["pdfs"] = {"name": pdf_name_for_xl}
-            xl_bytes = xl.build_excel_from_template(
-                products_for_xl,
-                order_info={"order_number": "DEBUG-001"},
-            )
-            st.success(f"✅ Excel generated with {len(products_for_xl)} products!")
-            st.download_button(
-                label="💾 Download Excel",
-                data=xl_bytes,
-                file_name="debug_extraction.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
+            # ── Order info inputs ──────────────────────────────────────────────
+            st.markdown("**Order information** (same fields as the real order form):")
+            col_a, col_b = st.columns(2)
+            xi_order_num  = col_a.text_input("订单号 Order number",   value="", key="xi_order_num")
+            xi_customer   = col_a.text_input("客户名称 Customer name", value="", key="xi_customer")
+            xi_contact    = col_b.text_input("联系人 Contact person",  value="", key="xi_contact")
+            xi_phone      = col_b.text_input("联系电话 Phone",         value="", key="xi_phone")
+
+            # ── Per-product qty, discount, image assignment ────────────────────
+            st.markdown("**Products** — set quantity, discount, and which image to use:")
+            img_options = ["(no image)"] + [f"Image {i+1}" for i in range(len(images_for_xl))]
+
+            per_product = []
+            for i, prod in enumerate(products_for_xl):
+                with st.expander(
+                    f"{i+1}. {prod.get('name','?')}  {prod.get('codes',[])}  "
+                    f"— ¥{prod.get('price','?')}",
+                    expanded=(i < 3),
+                ):
+                    c1, c2, c3 = st.columns(3)
+                    qty      = c1.number_input("数量 Qty",      min_value=1, value=1,    key=f"qty_{i}")
+                    discount = c2.number_input("折扣 Discount", min_value=0.0, max_value=1.0,
+                                               value=1.0, step=0.05, format="%.2f", key=f"disc_{i}")
+                    img_sel  = c3.selectbox("图片 Image", img_options, key=f"img_{i}")
+                    img_idx  = img_options.index(img_sel) - 1  # -1 = no image
+                    per_product.append({"qty": qty, "discount": discount, "img_idx": img_idx})
+
+            if st.button("📊 Generate Excel"):
+                # Attach qty/discount to products
+                xl_products = []
+                xl_images   = {}
+                for i, prod in enumerate(products_for_xl):
+                    p = dict(prod)
+                    if not p.get("pdfs"):
+                        p["pdfs"] = {"name": pdf_name_for_xl}
+                    p["_qty"]      = per_product[i]["qty"]
+                    p["_discount"] = per_product[i]["discount"]
+                    xl_products.append(p)
+                    # Map image
+                    img_idx = per_product[i]["img_idx"]
+                    if img_idx >= 0 and img_idx < len(images_for_xl):
+                        xl_images[i] = images_for_xl[img_idx]
+
+                xl_bytes = xl.build_excel_from_template(
+                    xl_products,
+                    order_info={
+                        "order_number":   xi_order_num,
+                        "customer_name":  xi_customer,
+                        "contact_person": xi_contact,
+                        "phone":          xi_phone,
+                    },
+                    product_images=xl_images,
+                )
+                st.success(f"✅ Excel generated with {len(xl_products)} products!")
+                st.download_button(
+                    label="💾 Download Excel",
+                    data=xl_bytes,
+                    file_name="order_test.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
     else:
         st.info("⬆️ Upload a PDF above to unlock sections 3, 4 and 5.")
