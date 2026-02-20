@@ -168,6 +168,13 @@ WHAT TO EXTRACT:
 3. ALL product families visible — if multiple products are shown, extract ALL of them
 4. Every single row with a code = one JSON entry, no exceptions
 
+CRITICAL NAME RULE:
+- Product catalogs show a FAMILY NAME in a bold header (e.g. "AVRO", "SPIDER", "MARBLE")
+- Below that header are many rows with codes — ALL those rows share that same family name
+- If this image shows rows WITHOUT a visible header (it was cut off above), look at the product codes to guess the family name (e.g. code "21019/DIM/AR" → the numeric part "21019" is likely the model, check nearby rows for a header)
+- NEVER leave name as null or "?" — use the family name from the header, or use the code prefix as the name (e.g. "21019" or "AVRO")
+- For accessories, use the accessory description as the name
+
 RULES:
 - One JSON object per code/row
 - Prices are plain numbers (e.g. 3120.00) — convert comma decimals: 3120,00 → 3120.00
@@ -178,7 +185,7 @@ RULES:
 
 Fields to include (only when value exists):
 - codes: ["CODE"] — required
-- name: product family name or accessory description — required
+- name: product family name (e.g. "AVRO") or accessory description — ALWAYS required, never "?"
 - color: color name (e.g. "Arancio", "Bianco")
 - light_source: e.g. "7.5W 1110lm Integrated LED"
 - cct: e.g. "2700K"
