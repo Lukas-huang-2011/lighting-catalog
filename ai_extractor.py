@@ -184,6 +184,8 @@ RULES:
 - OMIT any field that has no value — do NOT write null, just skip the key entirely
 - Keep field values short and factual
 - If no product codes visible (cover, index, pure text page), return []
+- CCT RULE: Values like "2700K", "3000K", "4000K" are color temperatures shown in a CCT column — put them in the `cct` field ONLY, NEVER include them in the `codes` array. Codes are alphanumeric article numbers like "21019/DIM/AR" — they never start with a temperature value
+- If a CCT value (e.g. 2700K) appears next to multiple codes in the same group, apply that cct value to all those codes
 
 Fields to include (only when value exists):
 - codes: ["CODE"] — required
