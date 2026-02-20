@@ -36,7 +36,9 @@ def get_client():
 
 
 def image_to_base64(image: Image.Image) -> tuple:
-    """Returns (base64_string, mime_type). Resizes and compresses to JPEG for Zhipu AI."""
+    """Returns (base64_string, mime_type). Resizes and compresses to JPEG for Zhipu AI.
+    GLM-4V-Flash works best with images under 1MB. Keep max side at 1024px, quality 75.
+    """
     img = image.convert("RGB")
     max_side = 1024
     w, h = img.size
@@ -47,6 +49,7 @@ def image_to_base64(image: Image.Image) -> tuple:
     img.save(buf, format="JPEG", quality=75)
     b64 = base64.b64encode(buf.getvalue()).decode()
     kb = len(buf.getvalue()) / 1024
+    # If still too large, compress further
     if kb > 800:
         buf2 = io.BytesIO()
         img.save(buf2, format="JPEG", quality=50)
@@ -56,6 +59,8 @@ def image_to_base64(image: Image.Image) -> tuple:
 
 def _parse_json(content: str) -> list:
     content = content.strip()
+
+    # Strip markdown code fences
     if "```" in content:
         for part in content.split("```"):
             part = part.strip().lstrip("json").strip()
@@ -65,12 +70,16 @@ def _parse_json(content: str) -> list:
                     return r
             except Exception:
                 continue
+
+    # Direct parse
     try:
         r = json.loads(content)
         if isinstance(r, list):
             return r
     except Exception:
         pass
+
+    # Try between first [ and last ]
     s, e = content.find("["), content.rfind("]")
     if s != -1 and e != -1:
         try:
@@ -79,6 +88,8 @@ def _parse_json(content: str) -> list:
                 return r
         except Exception:
             pass
+
+    # Truncated JSON — find last complete object and close the array
     s = content.find("[")
     if s != -1:
         last_close = content.rfind("}")
@@ -89,6 +100,7 @@ def _parse_json(content: str) -> list:
                     return r
             except Exception:
                 pass
+
     return []
 
 
@@ -120,7 +132,7 @@ def _call(api_key: str, model: str, image: Image.Image, prompt: str) -> tuple:
                 text = resp.json()["choices"][0]["message"]["content"]
                 return text, ""
             if resp.status_code == 429:
-                wait = 15 * (attempt + 1)
+                wait = 15 * (attempt + 1)   # 15s → 30s → 45s
                 time.sleep(wait)
                 continue
             return "", f"HTTP {resp.status_code}: {resp.text[:300]}"
@@ -211,12 +223,15 @@ def _dedup(products: list) -> list:
 
 
 def extract_products_from_page(api_key: str, page_image: Image.Image, page_num: int) -> list:
-    """Extract all products from a page. Splits into 4 sections with 3s delays."""
+    """
+    Extract all products from a page.
+    Splits into 4 sections; waits 3s between calls to stay within 20 RPM free tier.
+    """
     s1, s2, s3, s4 = _split_image(page_image)
     results = []
     for section in (s1, s2, s3, s4):
         results.extend(_extract_section(api_key, section))
-        time.sleep(3)
+        time.sleep(3)   # 3s gap → ~20 calls/min, within SiliconFlow free tier
     return _dedup(results)
 
 
@@ -257,10 +272,3 @@ def describe_image(api_key: str, image: Image.Image) -> str:
     prompt = "Describe this lighting product briefly: type, shape, color, style, any visible codes."
     text, _, _ = _call_best(api_key, image, prompt)
     return text
-```
-
-Then click **Commit changes**.
-
-Also check your Streamlit secrets — you need `ZHIPU_API_KEY` set there (not `GEMINI_API_KEY`). Go to your Streamlit Cloud app → ⚙️ Settings → Secrets and make sure it has:
-```
-ZHIPU_API_KEY = "your-zhipu-key"
