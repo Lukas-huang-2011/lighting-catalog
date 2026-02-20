@@ -40,14 +40,23 @@ def render_pages(pdf_bytes: bytes, dpi: int = 100):
 
 def extract_images_from_page(pdf_bytes: bytes, page_num: int) -> list:
     """
-    Extract embedded images from a single PDF page.
-    Returns list of PIL Images (only those > 80x80 px).
+    Extract product images from a single PDF page.
+
+    Strategy:
+    1. Try extracting embedded raster images (works for photo-based catalogs).
+    2. If none found (vector-drawing catalogs like Martinelli), render the page
+       at 150 DPI and crop the left ~38% which is where product illustrations
+       typically live. Splits into top/bottom halves to get one image per
+       product family when two products share a page.
+
+    Returns a list of PIL Images.
     """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     page = doc[page_num]
     images = []
     seen = set()
 
+    # ── Try embedded raster images first ─────────────────────────────────────
     for img_info in page.get_images(full=True):
         xref = img_info[0]
         if xref in seen:
@@ -57,12 +66,49 @@ def extract_images_from_page(pdf_bytes: bytes, page_num: int) -> list:
             base_image = doc.extract_image(xref)
             img_bytes = base_image["image"]
             img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-            if img.width > 80 and img.height > 80:
+            if img.width > 100 and img.height > 100:
                 images.append(img)
         except Exception:
             pass
 
+    if images:
+        doc.close()
+        return images
+
+    # ── Fallback: render page and crop product illustration area ─────────────
+    # Most lighting catalogs place product photos in the left ~38% of the page.
+    # A page usually contains 1–2 product families stacked vertically.
+    mat = fitz.Matrix(150 / 72, 150 / 72)   # 150 DPI
+    pix = page.get_pixmap(matrix=mat, alpha=False)
+    full = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
     doc.close()
+
+    w, h = full.size
+    img_col_w = int(w * 0.38)   # left illustration column
+
+    # Detect how many product sections: look for a wide horizontal white band
+    # in the middle of the page (separator between two products)
+    mid = h // 2
+    band_start, band_end = mid - 20, mid + 20
+    mid_strip = full.crop((0, band_start, img_col_w, band_end))
+    pixels = list(mid_strip.getdata())
+    avg_brightness = sum(r + g + b for r, g, b in pixels) / (len(pixels) * 3)
+
+    if avg_brightness > 230:
+        # Bright band → two products, return top-half and bottom-half crops
+        top = full.crop((0, 0,       img_col_w, mid))
+        bot = full.crop((0, mid,     img_col_w, h))
+        # Only return halves that have actual content (not all-white)
+        for crop in (top, bot):
+            cpix = list(crop.getdata())
+            brightness = sum(r + g + b for r, g, b in cpix) / (len(cpix) * 3)
+            if brightness < 250:   # not blank white
+                images.append(crop)
+    else:
+        # Single product — return full left column
+        left = full.crop((0, 0, img_col_w, h))
+        images.append(left)
+
     return images
 
 
