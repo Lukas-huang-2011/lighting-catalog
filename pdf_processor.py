@@ -38,25 +38,57 @@ def render_pages(pdf_bytes: bytes, dpi: int = 100):
     doc.close()
 
 
-def extract_images_from_page(pdf_bytes: bytes, page_num: int) -> list:
-    """
-    Extract product images from a single PDF page.
-
-    Strategy:
-    1. Try extracting embedded raster images (works for photo-based catalogs).
-    2. If none found (vector-drawing catalogs like Martinelli), render the page
-       at 150 DPI and crop the left ~38% which is where product illustrations
-       typically live. Splits into top/bottom halves to get one image per
-       product family when two products share a page.
-
-    Returns a list of PIL Images.
-    """
+def _render_page_full(pdf_bytes: bytes, page_num: int, dpi: int = 150) -> Image.Image:
+    """Render one page at the given DPI and return as RGB PIL image."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    page = doc[page_num]
-    images = []
-    seen = set()
+    mat = fitz.Matrix(dpi / 72, dpi / 72)
+    pix = doc[page_num].get_pixmap(matrix=mat, alpha=False)
+    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+    doc.close()
+    return img
 
+
+def _find_split_y(full: Image.Image) -> tuple:
+    """
+    Scan the full page for the brightest horizontal band between 30–70% height.
+    Returns (best_y, brightness).  brightness > 235 means a clear separator
+    between two stacked product families.
+    """
+    w, h = full.size
+    scan_start = int(h * 0.30)
+    scan_end   = int(h * 0.70)
+    best_y, best_brightness = h // 2, 0.0
+    for y in range(scan_start, scan_end, 5):
+        strip = full.crop((0, y, w, y + 8))
+        pxls  = list(strip.getdata())
+        bright = sum(r + g + b for r, g, b in pxls) / (len(pxls) * 3)
+        if bright > best_brightness:
+            best_brightness = bright
+            best_y = y + 4
+    return best_y, best_brightness
+
+
+def extract_page_images(pdf_bytes: bytes, page_num: int) -> dict:
+    """
+    Extract product illustration images AND dimension-drawing images from one page.
+
+    Layout assumption (typical lighting catalog, vector-graphic style):
+      LEFT  ~40%  — product illustration (for 图片 column)
+      RIGHT ~58%  — dimension drawing with measurement labels (for 尺寸 column + image search)
+
+    Returns:
+        {
+          'product': [PIL.Image, ...],   # 1–2 images, index 0=top product, 1=bottom product
+          'dim':     [PIL.Image, ...],   # same structure, right-side dimension drawings
+        }
+
+    If the PDF has embedded raster images (photo-based catalogs), those are returned
+    in 'product' and 'dim' is empty — embedded images can't be split by zone.
+    """
     # ── Try embedded raster images first ─────────────────────────────────────
+    doc  = fitz.open(stream=pdf_bytes, filetype="pdf")
+    page = doc[page_num]
+    rasters, seen = [], set()
     for img_info in page.get_images(full=True):
         xref = img_info[0]
         if xref in seen:
@@ -64,60 +96,54 @@ def extract_images_from_page(pdf_bytes: bytes, page_num: int) -> list:
         seen.add(xref)
         try:
             base_image = doc.extract_image(xref)
-            img_bytes = base_image["image"]
-            img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+            img = Image.open(io.BytesIO(base_image["image"])).convert("RGB")
             if img.width > 100 and img.height > 100:
-                images.append(img)
+                rasters.append(img)
         except Exception:
             pass
-
-    if images:
-        doc.close()
-        return images
-
-    # ── Fallback: render page and crop product illustration area ─────────────
-    # Most lighting catalogs place product illustrations in the left ~38% of
-    # the page. 1–2 product families are stacked vertically per page.
-    mat = fitz.Matrix(150 / 72, 150 / 72)   # 150 DPI for detail
-    pix = page.get_pixmap(matrix=mat, alpha=False)
-    full = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
     doc.close()
 
+    if rasters:
+        # Photo-based catalog — return embedded images as product photos; no dim drawings
+        return {"product": rasters[:2], "dim": []}
+
+    # ── Fallback: render page and crop by zone ────────────────────────────────
+    full = _render_page_full(pdf_bytes, page_num, dpi=150)
     w, h = full.size
-    img_col_w = int(w * 0.40)   # left illustration column width
 
-    # Find the horizontal separator between two products by scanning the FULL
-    # page width (not just the left column) for the whitest horizontal strip.
-    # Scan between 30% and 70% of the page height in 5-pixel steps.
-    scan_start = int(h * 0.30)
-    scan_end   = int(h * 0.70)
-    best_y, best_brightness = h // 2, 0.0
+    # Column boundaries
+    prod_right  = int(w * 0.40)   # right edge of illustration zone
+    dim_left    = int(w * 0.42)   # left  edge of dimension-drawing zone
 
-    for y in range(scan_start, scan_end, 5):
-        strip = full.crop((0, y, w, y + 8))
-        pxls  = list(strip.getdata())
-        bright = sum(r + g + b for r, g, b in pxls) / (len(pxls) * 3)
-        if bright > best_brightness:
-            best_brightness = bright
-            best_y = y + 4   # centre of the strip
+    # Detect horizontal separator (two products stacked vertically)
+    best_y, best_brightness = _find_split_y(full)
+    two_products = best_brightness > 235
 
-    # If the whitest band is clearly bright (separator line), split there.
-    # Otherwise treat the page as a single-product page.
-    if best_brightness > 235:
-        regions = [
-            full.crop((0, 0,      img_col_w, best_y)),
-            full.crop((0, best_y, img_col_w, h)),
+    if two_products:
+        prod_regions = [
+            full.crop((0,        0,      prod_right, best_y)),
+            full.crop((0,        best_y, prod_right, h)),
+        ]
+        dim_regions = [
+            full.crop((dim_left, 0,      w,          best_y)),
+            full.crop((dim_left, best_y, w,          h)),
         ]
     else:
-        regions = [full.crop((0, 0, img_col_w, h))]
+        prod_regions = [full.crop((0,        0, prod_right, h))]
+        dim_regions  = [full.crop((dim_left, 0, w,          h))]
 
-    # Trim white borders from each region and keep only non-blank ones.
-    for region in regions:
-        trimmed = _trim_whitespace(region)
-        if trimmed is not None:
-            images.append(trimmed)
+    product_imgs = [t for r in prod_regions if (t := _trim_whitespace(r))      is not None]
+    dim_imgs     = [t for r in dim_regions  if (t := _trim_whitespace_dim(r))  is not None]
 
-    return images
+    return {"product": product_imgs, "dim": dim_imgs}
+
+
+def extract_images_from_page(pdf_bytes: bytes, page_num: int) -> list:
+    """
+    Backward-compatible wrapper — returns product illustration images only.
+    Use extract_page_images() for both illustration + dimension drawings.
+    """
+    return extract_page_images(pdf_bytes, page_num)["product"]
 
 
 def _trim_whitespace(img: Image.Image, threshold: int = 245) -> Image.Image | None:
@@ -178,6 +204,28 @@ def _trim_whitespace(img: Image.Image, threshold: int = 245) -> Image.Image | No
         trimmed = trimmed.crop((0, y0, w2, y1))
 
     return trimmed
+
+
+def _trim_whitespace_dim(img: Image.Image, threshold: int = 248) -> Image.Image | None:
+    """
+    Light whitespace trim for dimension drawings — keeps more context than the
+    product-illustration trim so measurement labels at the edges aren't cut off.
+    Does NOT apply the dense-zone crop (the illustration finder would strip away
+    the thin dimension arrows and text that are sparse by nature).
+    """
+    import numpy as np
+    arr  = np.array(img)
+    mask = (arr < threshold).any(axis=2)
+    rows = mask.any(axis=1)
+    cols = mask.any(axis=0)
+    if not rows.any():
+        return None
+    r_min = max(0, rows.argmax() - 12)
+    r_max = min(img.height, len(rows) - rows[::-1].argmax() + 12)
+    c_min = max(0, cols.argmax() - 12)
+    c_max = min(img.width,  len(cols) - cols[::-1].argmax() + 12)
+    cropped = img.crop((c_min, r_min, c_max, r_max))
+    return cropped if cropped.width > 20 and cropped.height > 20 else None
 
 
 def _parse_price(price_str: str) -> float | None:
