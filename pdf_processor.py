@@ -122,7 +122,8 @@ def extract_images_from_page(pdf_bytes: bytes, page_num: int) -> list:
 
 def _trim_whitespace(img: Image.Image, threshold: int = 245) -> Image.Image | None:
     """
-    Crop white/near-white borders from a PIL Image.
+    Crop white/near-white borders from a PIL Image, then focus on the
+    densest illustration zone to remove text headers / peripheral annotations.
     Returns None if the entire image is blank.
     """
     import numpy as np
@@ -135,13 +136,48 @@ def _trim_whitespace(img: Image.Image, threshold: int = 245) -> Image.Image | No
         return None
     r_min, r_max = rows.argmax(), len(rows) - rows[::-1].argmax()
     c_min, c_max = cols.argmax(), len(cols) - cols[::-1].argmax()
-    # Add a small padding so the image doesn't feel too tight
-    pad = 10
+    # Tight padding — just enough to not clip the illustration edge
+    pad = 6
     r_min = max(0, r_min - pad)
     r_max = min(img.height, r_max + pad)
     c_min = max(0, c_min - pad)
     c_max = min(img.width,  c_max + pad)
-    return img.crop((c_min, r_min, c_max, r_max))
+    trimmed = img.crop((c_min, r_min, c_max, r_max))
+
+    # ── Focus on the densest illustration zone ───────────────────────────────
+    # After trimming whitespace the image may still include a text header
+    # (product name, article number) above the lamp illustration.
+    # We find the vertical window that contains the most dark content —
+    # the illustration body — and crop to that zone.
+    arr2 = np.array(trimmed)
+    h2, w2 = arr2.shape[:2]
+    if h2 < 40:
+        return trimmed   # too small to bother
+    # Row-level darkness fraction (pixels darker than 180 = actual drawn content)
+    dark_row = (arr2 < 180).any(axis=2).mean(axis=1)   # shape (h2,)
+
+    # Sliding window: find the contiguous block of rows with the most content.
+    # Window size = 55% of image height, so we always keep the majority.
+    win = max(20, int(h2 * 0.55))
+    best_start, best_score = 0, -1.0
+    for y in range(0, h2 - win + 1, 3):
+        score = dark_row[y: y + win].sum()
+        if score > best_score:
+            best_score = score
+            best_start = y
+    best_end = min(h2, best_start + win)
+
+    # Only apply the zone crop if it meaningfully changes the bounds
+    # (skip if we'd be removing less than 8% from either side — not worth it)
+    top_skip = best_start
+    bot_skip = h2 - best_end
+    if top_skip > int(h2 * 0.08) or bot_skip > int(h2 * 0.08):
+        zone_pad = 8
+        y0 = max(0, best_start - zone_pad)
+        y1 = min(h2, best_end + zone_pad)
+        trimmed = trimmed.crop((0, y0, w2, y1))
+
+    return trimmed
 
 
 def _parse_price(price_str: str) -> float | None:
