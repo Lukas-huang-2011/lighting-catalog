@@ -156,12 +156,18 @@ def build_excel_from_template(
         qty      = product.get("_qty", 1)
         discount = product.get("_discount", 1)
 
+        # _color / _delivery / _category are set by the UI;
+        # fall back to raw PDF fields if not overridden
+        color    = product.get("_color")    if product.get("_color")    is not None else product.get("color")    or ""
+        delivery = product.get("_delivery") if product.get("_delivery") is not None else "现货"
+        category = product.get("_category") if product.get("_category") is not None else product.get("description") or ""
+
         ws.cell(row=row, column=COL_SEQ).value   = i + 1
         ws.cell(row=row, column=COL_BRAND).value = brand
         ws.cell(row=row, column=COL_CODE).value  = ", ".join(str(c) for c in codes)
         ws.cell(row=row, column=COL_NAME).value  = product.get("name") or ""
-        ws.cell(row=row, column=COL_COLOR).value = product.get("color") or ""
-        ws.cell(row=row, column=COL_TYPE).value  = product.get("description") or ""
+        ws.cell(row=row, column=COL_COLOR).value = color
+        ws.cell(row=row, column=COL_TYPE).value  = category
         ws.cell(row=row, column=COL_DIM).value   = product.get("dimensions") or ""
         light_parts = [
             product.get("light_source") or ef.get("light_source") or "",
@@ -169,7 +175,7 @@ def build_excel_from_template(
             product.get("wattage") or ef.get("wattage") or "",
         ]
         ws.cell(row=row, column=COL_LIGHT).value = "  ".join(p for p in light_parts if p)
-        ws.cell(row=row, column=COL_DELIV).value = "现货"
+        ws.cell(row=row, column=COL_DELIV).value = delivery
         ws.cell(row=row, column=COL_PRICE).value = price
         ws.cell(row=row, column=COL_QTY).value   = qty
         ws.cell(row=row, column=COL_TOTAL).value = f"=K{row}*L{row}"
