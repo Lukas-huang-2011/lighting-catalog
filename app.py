@@ -598,16 +598,14 @@ elif page == "🛠️ Debug & Test":
                     brands_order.append(b)
                 by_brand[b].append(i)
 
-            # Image option lists
-            prod_img_opts = ["(no image)"] + [f"Illus. {j+1}" for j in range(len(images_for_xl))]
-            dim_img_opts  = ["(no image)"] + [f"Dim. {j+1}"   for j in range(len(dim_images_for_xl))]
-            per_product   = [None] * len(products_for_xl)
+            per_product = [None] * len(products_for_xl)
 
             st.markdown("**Products by brand** — adjust brand discount, then fine-tune each product:")
             st.markdown(
                 "<small style='color:gray'>"
                 "Colour and category are auto-filled from PDF. "
-                "Dimension drawings are auto-assigned by position (Dim. 1 → product 1, etc.).</small>",
+                "尺寸 dimension drawings are embedded automatically from the PDF. "
+                "Upload real-life 图片 photos manually if needed.</small>",
                 unsafe_allow_html=True,
             )
 
@@ -665,44 +663,20 @@ elif page == "🛠️ Debug & Test":
                             key=f"category_{i}", placeholder="e.g. 吊灯",
                         )
 
-                        st.markdown("**图片** (product photo):")
-                        img_c1, img_c2 = st.columns([3, 1])
-                        # Auto-assign: product i → illustration i (cap at last)
-                        auto_prod_img = min(i, len(images_for_xl) - 1) if images_for_xl else -1
-                        img_sel = img_c1.selectbox(
-                            "图片 Image", prod_img_opts,
-                            index=max(0, auto_prod_img + 1),
-                            key=f"img_{i}",
-                        )
-                        img_idx = prod_img_opts.index(img_sel) - 1
-                        if img_idx >= 0:
-                            img_c2.image(images_for_xl[img_idx], width=70)
-
-                        st.markdown("**尺寸图** (dimension drawing → 尺寸 column + image search):")
-                        dim_c1, dim_c2 = st.columns([3, 1])
-                        # Auto-assign: product i → dim drawing i (cap at last)
-                        auto_dim = min(i, len(dim_images_for_xl) - 1) if dim_images_for_xl else -1
-                        dim_sel = dim_c1.selectbox(
-                            "尺寸 Dim. image", dim_img_opts,
-                            index=max(0, auto_dim + 1),
-                            key=f"dim_{i}",
-                        )
-                        dim_idx = dim_img_opts.index(dim_sel) - 1
-                        if dim_idx >= 0:
-                            dim_c2.image(dim_images_for_xl[dim_idx], width=70)
-
-                        # Custom upload (overrides selectbox for 图片)
+                        # 图片: manual upload of real-life product photo
+                        st.markdown("**图片** (real-life product photo — upload manually):")
                         custom_file = st.file_uploader(
-                            "Upload custom 图片 image (overrides selectbox)",
+                            "Upload 图片 (JPG / PNG)",
                             type=["jpg", "jpeg", "png"], key=f"custom_img_{i}",
                         )
                         custom_pil = Image.open(custom_file).convert("RGB") if custom_file else None
                         if custom_pil:
-                            st.image(custom_pil, width=80, caption="Custom 图片 (will be used)")
+                            st.image(custom_pil, width=120, caption="图片 ✓")
+                        img_idx = -1   # unused; custom_pil is the only source
 
                     per_product[i] = {
                         "qty": qty, "discount": disc,
-                        "img_idx": img_idx, "dim_idx": dim_idx,
+                        "img_idx": img_idx,
                         "color": color, "delivery": delivery, "category": category,
                         "custom_pil": custom_pil,
                     }
@@ -717,7 +691,7 @@ elif page == "🛠️ Debug & Test":
                     if not p.get("pdfs"):
                         p["pdfs"] = {"name": pdf_name_for_xl}
                     pp = per_product[i] or {
-                        "qty": 1, "discount": 1.0, "img_idx": -1, "dim_idx": -1,
+                        "qty": 1, "discount": 1.0, "img_idx": -1,
                         "color": "如图", "delivery": "现货", "category": "",
                         "custom_pil": None,
                     }
@@ -728,15 +702,14 @@ elif page == "🛠️ Debug & Test":
                     p["_category"] = pp["category"]
                     xl_products.append(p)
 
-                    # 图片 image: custom upload > selectbox
+                    # 图片 image: manual upload only
                     if pp["custom_pil"] is not None:
                         xl_prod_imgs[i] = pp["custom_pil"]
-                    elif 0 <= pp["img_idx"] < len(images_for_xl):
-                        xl_prod_imgs[i] = images_for_xl[pp["img_idx"]]
 
-                    # 尺寸 dim image: from selectbox
-                    if 0 <= pp["dim_idx"] < len(dim_images_for_xl):
-                        xl_dim_imgs[i] = dim_images_for_xl[pp["dim_idx"]]
+                    # 尺寸 dim image: fully automatic — product i → dim drawing i
+                    if dim_images_for_xl:
+                        auto_dim_idx = min(i, len(dim_images_for_xl) - 1)
+                        xl_dim_imgs[i] = dim_images_for_xl[auto_dim_idx]
 
                 xl_bytes = xl.build_excel_from_template(
                     xl_products,
