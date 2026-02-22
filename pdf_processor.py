@@ -76,40 +76,72 @@ def extract_images_from_page(pdf_bytes: bytes, page_num: int) -> list:
         return images
 
     # ── Fallback: render page and crop product illustration area ─────────────
-    # Most lighting catalogs place product photos in the left ~38% of the page.
-    # A page usually contains 1–2 product families stacked vertically.
-    mat = fitz.Matrix(150 / 72, 150 / 72)   # 150 DPI
+    # Most lighting catalogs place product illustrations in the left ~38% of
+    # the page. 1–2 product families are stacked vertically per page.
+    mat = fitz.Matrix(150 / 72, 150 / 72)   # 150 DPI for detail
     pix = page.get_pixmap(matrix=mat, alpha=False)
     full = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
     doc.close()
 
     w, h = full.size
-    img_col_w = int(w * 0.38)   # left illustration column
+    img_col_w = int(w * 0.40)   # left illustration column width
 
-    # Detect how many product sections: look for a wide horizontal white band
-    # in the middle of the page (separator between two products)
-    mid = h // 2
-    band_start, band_end = mid - 20, mid + 20
-    mid_strip = full.crop((0, band_start, img_col_w, band_end))
-    pixels = list(mid_strip.getdata())
-    avg_brightness = sum(r + g + b for r, g, b in pixels) / (len(pixels) * 3)
+    # Find the horizontal separator between two products by scanning the FULL
+    # page width (not just the left column) for the whitest horizontal strip.
+    # Scan between 30% and 70% of the page height in 5-pixel steps.
+    scan_start = int(h * 0.30)
+    scan_end   = int(h * 0.70)
+    best_y, best_brightness = h // 2, 0.0
 
-    if avg_brightness > 230:
-        # Bright band → two products, return top-half and bottom-half crops
-        top = full.crop((0, 0,       img_col_w, mid))
-        bot = full.crop((0, mid,     img_col_w, h))
-        # Only return halves that have actual content (not all-white)
-        for crop in (top, bot):
-            cpix = list(crop.getdata())
-            brightness = sum(r + g + b for r, g, b in cpix) / (len(cpix) * 3)
-            if brightness < 250:   # not blank white
-                images.append(crop)
+    for y in range(scan_start, scan_end, 5):
+        strip = full.crop((0, y, w, y + 8))
+        pxls  = list(strip.getdata())
+        bright = sum(r + g + b for r, g, b in pxls) / (len(pxls) * 3)
+        if bright > best_brightness:
+            best_brightness = bright
+            best_y = y + 4   # centre of the strip
+
+    # If the whitest band is clearly bright (separator line), split there.
+    # Otherwise treat the page as a single-product page.
+    if best_brightness > 235:
+        regions = [
+            full.crop((0, 0,      img_col_w, best_y)),
+            full.crop((0, best_y, img_col_w, h)),
+        ]
     else:
-        # Single product — return full left column
-        left = full.crop((0, 0, img_col_w, h))
-        images.append(left)
+        regions = [full.crop((0, 0, img_col_w, h))]
+
+    # Trim white borders from each region and keep only non-blank ones.
+    for region in regions:
+        trimmed = _trim_whitespace(region)
+        if trimmed is not None:
+            images.append(trimmed)
 
     return images
+
+
+def _trim_whitespace(img: Image.Image, threshold: int = 245) -> Image.Image | None:
+    """
+    Crop white/near-white borders from a PIL Image.
+    Returns None if the entire image is blank.
+    """
+    import numpy as np
+    arr = np.array(img)
+    # Mask of non-white pixels (any channel below threshold)
+    mask = (arr < threshold).any(axis=2)
+    rows = mask.any(axis=1)
+    cols = mask.any(axis=0)
+    if not rows.any():
+        return None
+    r_min, r_max = rows.argmax(), len(rows) - rows[::-1].argmax()
+    c_min, c_max = cols.argmax(), len(cols) - cols[::-1].argmax()
+    # Add a small padding so the image doesn't feel too tight
+    pad = 10
+    r_min = max(0, r_min - pad)
+    r_max = min(img.height, r_max + pad)
+    c_min = max(0, c_min - pad)
+    c_max = min(img.width,  c_max + pad)
+    return img.crop((c_min, r_min, c_max, r_max))
 
 
 def _parse_price(price_str: str) -> float | None:
