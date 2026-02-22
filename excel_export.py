@@ -21,7 +21,7 @@ COL_NAME   = 4   # 名称
 COL_IMAGE  = 5   # 图片
 COL_COLOR  = 6   # 颜色
 COL_TYPE   = 7   # 种类
-COL_DIM    = 8   # 尺寸 (cm)
+COL_DIM    = 8   # 尺寸 (cm)  ← also receives dimension-drawing image
 COL_LIGHT  = 9   # 光源参数
 COL_DELIV  = 10  # 到货时间
 COL_PRICE  = 11  # 零售单价
@@ -32,6 +32,32 @@ COL_FINAL  = 15  # 折后价 (=Mn*Nn)
 
 PRODUCT_START_ROW = 9  # First data row in template
 ROW_HEIGHT_PX     = 80  # Row height for product rows (used when images present)
+
+# ── Lighting-type keyword → Chinese translation ───────────────────────────────
+_TYPE_KW_ZH = [
+    ("pendant",    "吊灯"), ("suspension", "吊灯"), ("chandelier", "吊灯"),
+    ("hanging",    "吊灯"), ("sospension", "吊灯"),
+    ("wall",       "壁灯"), ("sconce",     "壁灯"), ("aplique",    "壁灯"),
+    ("table",      "台灯"), ("desk",       "台灯"),
+    ("floor",      "落地灯"),
+    ("ceiling",    "吸顶灯"), ("flush",    "吸顶灯"), ("plafon",   "吸顶灯"),
+    ("spot",       "射灯"),  ("spotlight", "射灯"),
+    ("downlight",  "筒灯"),  ("recessed",  "筒灯"),
+    ("track",      "轨道灯"),
+    ("strip",      "灯带"),  ("linear",    "线条灯"), ("profile",  "线条灯"),
+    ("outdoor",    "户外灯"), ("exterior", "户外灯"),
+    ("garden",     "庭院灯"), ("street",   "路灯"),
+    ("panel",      "面板灯"), ("bollard",  "地埋灯"),
+]
+
+
+def _detect_zh_type(text: str) -> str:
+    """Return Chinese lighting-type for the first keyword found in text, or ''."""
+    lower = (text or "").lower()
+    for kw, zh in _TYPE_KW_ZH:
+        if kw in lower:
+            return zh
+    return ""
 
 
 def _extract_brand(pdf_name: str) -> str:
@@ -69,7 +95,8 @@ def _pil_to_xl_image(pil_img: PILImage.Image, max_px: int = 120) -> XLImage:
 def build_excel_from_template(
     products: list,
     order_info: dict | None = None,
-    product_images: dict | None = None,   # {product_index: PIL.Image}
+    product_images: dict | None = None,   # {product_index: PIL.Image}  → 图片 column
+    dim_images:     dict | None = None,   # {product_index: PIL.Image}  → 尺寸 column
 ) -> bytes:
     """
     Fill order_template.xlsx with product rows and return the file as bytes.
@@ -78,12 +105,17 @@ def build_excel_from_template(
       order_number, date, customer_name, contact_person, phone
 
     product_images: optional dict mapping product list index → PIL Image
-      to embed in the 图片 column
+      to embed in the 图片 (E) column
+
+    dim_images: optional dict mapping product list index → PIL Image
+      to embed in the 尺寸 (H) column (dimension drawings with measurement labels)
     """
     if order_info is None:
         order_info = {}
     if product_images is None:
         product_images = {}
+    if dim_images is None:
+        dim_images = {}
 
     n = len(products)
     if n == 0:
@@ -156,11 +188,25 @@ def build_excel_from_template(
         qty      = product.get("_qty", 1)
         discount = product.get("_discount", 1)
 
-        # _color / _delivery / _category are set by the UI;
-        # fall back to raw PDF fields if not overridden
-        color    = product.get("_color")    if product.get("_color")    is not None else product.get("color")    or ""
+        # ── 颜色: UI override → PDF field → "如图" (template placeholder) ──────
+        if product.get("_color") is not None:
+            color = product["_color"] or ""          # explicit UI value (may be empty)
+        else:
+            color = product.get("color") or "如图"   # auto: PDF value or placeholder
+
+        # ── 到货时间 ─────────────────────────────────────────────────────────
         delivery = product.get("_delivery") if product.get("_delivery") is not None else "现货"
-        category = product.get("_category") if product.get("_category") is not None else product.get("description") or ""
+
+        # ── 种类: UI override → auto-detect from description/name → raw description ──
+        if product.get("_category") is not None:
+            category = product["_category"] or ""    # explicit UI value
+        else:
+            raw_desc = product.get("description") or ""
+            category = (
+                _detect_zh_type(raw_desc)
+                or _detect_zh_type(product.get("name") or "")
+                or raw_desc
+            )
 
         ws.cell(row=row, column=COL_SEQ).value   = i + 1
         ws.cell(row=row, column=COL_BRAND).value = brand
@@ -182,13 +228,20 @@ def build_excel_from_template(
         ws.cell(row=row, column=COL_DISC).value  = discount
         ws.cell(row=row, column=COL_FINAL).value = f"=M{row}*N{row}"
 
-        # Embed product image if provided
+        # ── Embed 图片 (product illustration) if provided ─────────────────────
         if i in product_images and product_images[i] is not None:
             try:
-                # Size to fit column E (≈210px wide) and row (≈195px tall)
                 xl_img = _pil_to_xl_image(product_images[i], max_px=185)
-                col_letter = get_column_letter(COL_IMAGE)
-                xl_img.anchor = f"{col_letter}{row}"
+                xl_img.anchor = f"{get_column_letter(COL_IMAGE)}{row}"
+                ws.add_image(xl_img)
+            except Exception:
+                pass
+
+        # ── Embed 尺寸 (dimension drawing) if provided ────────────────────────
+        if i in dim_images and dim_images[i] is not None:
+            try:
+                xl_img = _pil_to_xl_image(dim_images[i], max_px=160)
+                xl_img.anchor = f"{get_column_letter(COL_DIM)}{row}"
                 ws.add_image(xl_img)
             except Exception:
                 pass
