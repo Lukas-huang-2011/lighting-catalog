@@ -543,24 +543,36 @@ elif page == "🛠️ Debug & Test":
             xi_contact    = col_b.text_input("联系人 Contact person",  value="", key="xi_contact")
             xi_phone      = col_b.text_input("联系电话 Phone",         value="", key="xi_phone")
 
-            # ── Per-product qty, discount, image assignment ────────────────────
-            st.markdown("**Products** — set quantity, discount, and which image to use:")
+            # ── Global discount (applies to all products) ──────────────────────
+            st.markdown("**Discount**")
+            global_disc = st.number_input(
+                "Global discount 统一折扣 (applies to all products, e.g. 0.85 = 85% = 15% off)",
+                min_value=0.0, max_value=1.0, value=1.0, step=0.05, format="%.2f",
+                key="xi_global_disc",
+            )
+
+            # ── Per-product qty, image, and optional discount override ─────────
+            st.markdown("**Products** — set quantity and image per product. Expand a row to override its discount.")
             img_options = ["(no image)"] + [f"Image {i+1}" for i in range(len(images_for_xl))]
 
             per_product = []
             for i, prod in enumerate(products_for_xl):
-                with st.expander(
-                    f"{i+1}. {prod.get('name','?')}  {prod.get('codes',[])}  "
-                    f"— ¥{prod.get('price','?')}",
-                    expanded=(i < 3),
-                ):
+                price_str = f"¥{prod.get('price', '?')}"
+                label = (f"{i+1}. {prod.get('name','?')}  "
+                         f"{', '.join(str(c) for c in prod.get('codes',[]))}  — {price_str}")
+                with st.expander(label, expanded=False):
                     c1, c2, c3 = st.columns(3)
-                    qty      = c1.number_input("数量 Qty",      min_value=1, value=1,    key=f"qty_{i}")
-                    discount = c2.number_input("折扣 Discount", min_value=0.0, max_value=1.0,
-                                               value=1.0, step=0.05, format="%.2f", key=f"disc_{i}")
-                    img_sel  = c3.selectbox("图片 Image", img_options, key=f"img_{i}")
-                    img_idx  = img_options.index(img_sel) - 1  # -1 = no image
-                    per_product.append({"qty": qty, "discount": discount, "img_idx": img_idx})
+                    qty     = c1.number_input("数量 Qty", min_value=1, value=1, key=f"qty_{i}")
+                    img_sel = c2.selectbox("图片 Image", img_options, key=f"img_{i}")
+                    img_idx = img_options.index(img_sel) - 1
+                    use_own = c3.checkbox("Override discount", key=f"ov_{i}")
+                    if use_own:
+                        disc = c3.number_input("折扣", min_value=0.0, max_value=1.0,
+                                               value=global_disc, step=0.05, format="%.2f",
+                                               key=f"disc_{i}")
+                    else:
+                        disc = global_disc
+                    per_product.append({"qty": qty, "discount": disc, "img_idx": img_idx})
 
             if st.button("📊 Generate Excel"):
                 # Attach qty/discount to products
