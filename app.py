@@ -533,62 +533,93 @@ elif page == "🛠️ Debug & Test":
         if not products_for_xl:
             st.info("▶ Run **section 3** first to extract products, then come back here.")
         else:
-            st.markdown(f"Using **{len(products_for_xl)} products** from section 3.")
-
-            # ── Order info inputs ──────────────────────────────────────────────
-            st.markdown("**Order information** (same fields as the real order form):")
+            # ── Order info ─────────────────────────────────────────────────────
+            st.markdown("**Order information:**")
             col_a, col_b = st.columns(2)
-            xi_order_num  = col_a.text_input("订单号 Order number",   value="", key="xi_order_num")
-            xi_customer   = col_a.text_input("客户名称 Customer name", value="", key="xi_customer")
-            xi_contact    = col_b.text_input("联系人 Contact person",  value="", key="xi_contact")
-            xi_phone      = col_b.text_input("联系电话 Phone",         value="", key="xi_phone")
+            xi_order_num = col_a.text_input("订单号 Order number",   key="xi_order_num")
+            xi_customer  = col_a.text_input("客户名称 Customer name", key="xi_customer")
+            xi_contact   = col_b.text_input("联系人 Contact person",  key="xi_contact")
+            xi_phone     = col_b.text_input("联系电话 Phone",         key="xi_phone")
 
-            # ── Global discount (applies to all products) ──────────────────────
-            st.markdown("**Discount**")
-            global_disc = st.number_input(
-                "Global discount 统一折扣 (applies to all products, e.g. 0.85 = 85% = 15% off)",
-                min_value=0.0, max_value=1.0, value=1.0, step=0.05, format="%.2f",
-                key="xi_global_disc",
+            # ── Group products by brand ────────────────────────────────────────
+            # Brand = PDF name for now; later could be product.brand field
+            from collections import OrderedDict
+
+            def _brand_of(prod, fallback):
+                info = prod.get("pdfs") or {}
+                raw  = info.get("name") or prod.get("brand") or fallback
+                return raw.replace(".pdf","").replace(".PDF","").replace("_"," ").title()
+
+            brands_order = []
+            by_brand = OrderedDict()
+            for i, prod in enumerate(products_for_xl):
+                b = _brand_of(prod, pdf_name_for_xl)
+                if b not in by_brand:
+                    by_brand[b] = []
+                    brands_order.append(b)
+                by_brand[b].append(i)
+
+            img_options = ["(no image)"] + [f"Image {i+1}" for i in range(len(images_for_xl))]
+            per_product = [None] * len(products_for_xl)
+
+            st.markdown("**Products by brand** — set brand discount, then individual qty / discount / image:")
+            st.markdown(
+                "<small style='color:gray'>Brand discount fills all products of that brand. "
+                "Change individual product discount to override for just that one.</small>",
+                unsafe_allow_html=True,
             )
 
-            # ── Per-product qty, image, and optional discount override ─────────
-            st.markdown("**Products** — set quantity and image per product. Expand a row to override its discount.")
-            img_options = ["(no image)"] + [f"Image {i+1}" for i in range(len(images_for_xl))]
+            for brand in brands_order:
+                indices = by_brand[brand]
+                st.markdown(f"---\n**🏷 {brand}**")
 
-            per_product = []
-            for i, prod in enumerate(products_for_xl):
-                price_str = f"¥{prod.get('price', '?')}"
-                label = (f"{i+1}. {prod.get('name','?')}  "
-                         f"{', '.join(str(c) for c in prod.get('codes',[]))}  — {price_str}")
-                with st.expander(label, expanded=False):
-                    c1, c2, c3 = st.columns(3)
-                    qty     = c1.number_input("数量 Qty", min_value=1, value=1, key=f"qty_{i}")
-                    img_sel = c2.selectbox("图片 Image", img_options, key=f"img_{i}")
+                # Brand-level discount — changing this updates all its products' defaults
+                brand_disc = st.number_input(
+                    f"Brand discount for {brand}  (e.g. 0.85 = 15% off)",
+                    min_value=0.0, max_value=1.0, value=1.0, step=0.05, format="%.2f",
+                    key=f"brand_disc_{brand}",
+                )
+
+                # Column headers for product rows
+                hc = st.columns([3, 1, 1, 2])
+                hc[0].markdown("**Product / Code**")
+                hc[1].markdown("**数量 Qty**")
+                hc[2].markdown("**折扣 Disc**")
+                hc[3].markdown("**图片 Image**")
+
+                for i in indices:
+                    prod = products_for_xl[i]
+                    codes_str = ", ".join(str(c) for c in prod.get("codes", []))
+                    name_str  = prod.get("name", "?")
+                    price_str = f"¥{prod.get('price', '—')}"
+                    col = st.columns([3, 1, 1, 2])
+                    col[0].markdown(f"{i+1}. **{name_str}**  `{codes_str}`  {price_str}")
+                    qty     = col[1].number_input("", min_value=0, value=1, key=f"qty_{i}",
+                                                  label_visibility="collapsed")
+                    disc    = col[2].number_input("", min_value=0.0, max_value=1.0,
+                                                  value=float(brand_disc), step=0.05,
+                                                  format="%.2f", key=f"disc_{i}",
+                                                  label_visibility="collapsed")
+                    img_sel = col[3].selectbox("", img_options, key=f"img_{i}",
+                                               label_visibility="collapsed")
                     img_idx = img_options.index(img_sel) - 1
-                    use_own = c3.checkbox("Override discount", key=f"ov_{i}")
-                    if use_own:
-                        disc = c3.number_input("折扣", min_value=0.0, max_value=1.0,
-                                               value=global_disc, step=0.05, format="%.2f",
-                                               key=f"disc_{i}")
-                    else:
-                        disc = global_disc
-                    per_product.append({"qty": qty, "discount": disc, "img_idx": img_idx})
+                    per_product[i] = {"qty": qty, "discount": disc, "img_idx": img_idx}
 
+            st.markdown("---")
             if st.button("📊 Generate Excel"):
-                # Attach qty/discount to products
                 xl_products = []
                 xl_images   = {}
                 for i, prod in enumerate(products_for_xl):
                     p = dict(prod)
                     if not p.get("pdfs"):
                         p["pdfs"] = {"name": pdf_name_for_xl}
-                    p["_qty"]      = per_product[i]["qty"]
-                    p["_discount"] = per_product[i]["discount"]
+                    pp = per_product[i] or {"qty": 1, "discount": 1.0, "img_idx": -1}
+                    p["_qty"]      = pp["qty"]
+                    p["_discount"] = pp["discount"]
                     xl_products.append(p)
-                    # Map image
-                    img_idx = per_product[i]["img_idx"]
-                    if img_idx >= 0 and img_idx < len(images_for_xl):
-                        xl_images[i] = images_for_xl[img_idx]
+                    idx = pp["img_idx"]
+                    if 0 <= idx < len(images_for_xl):
+                        xl_images[i] = images_for_xl[idx]
 
                 xl_bytes = xl.build_excel_from_template(
                     xl_products,
