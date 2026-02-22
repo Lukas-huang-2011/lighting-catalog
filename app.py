@@ -497,69 +497,79 @@ elif page == "🛠️ Debug & Test":
         st.divider()
         # ── 4. Image extraction ────────────────────────────────────────────────
         st.subheader("4. Test image extraction on this page")
-        st.markdown("Extracts product photos from the page. For catalogs with vector illustrations (not real photos), it crops the left column where product drawings usually are.")
+        st.markdown(
+            "Extracts **two image types per page**: "
+            "product illustration (left ~40% → 图片 column) and "
+            "dimension drawing with measurement labels (right ~58% → 尺寸 column + image search). "
+            "Index 0 = top product, index 1 = bottom product on the page."
+        )
 
-        if st.button("🖼️ Extract product images"):
-            raw_images = pdf.extract_images_from_page(pdf_bytes, page_num)
-            if raw_images:
-                st.success(f"✅ Found **{len(raw_images)} image(s)**")
-                st.session_state["debug_images"] = raw_images
-                cols = st.columns(min(len(raw_images), 4))
-                for idx, pil_img in enumerate(raw_images):
-                    cols[idx % 4].image(
-                        pil_img,
-                        caption=f"Image {idx + 1}  ({pil_img.width}×{pil_img.height}px)",
-                        use_container_width=True,
-                    )
-                st.info("These images will be embedded in the Excel 图片 column in section 5. One image can cover multiple products — assign which image goes to which product in section 5.")
-            else:
+        if st.button("🖼️ Extract images (illustration + dimension drawing)"):
+            result    = pdf.extract_page_images(pdf_bytes, page_num)
+            prod_imgs = result["product"]
+            dim_imgs  = result["dim"]
+            st.session_state["debug_images"]     = prod_imgs
+            st.session_state["debug_dim_images"] = dim_imgs
+
+            if not prod_imgs and not dim_imgs:
                 st.warning("⚠️ No images found on this page.")
+            else:
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.markdown(f"**🖼 Product illustrations** ({len(prod_imgs)} found) → 图片 column")
+                    for idx, img in enumerate(prod_imgs):
+                        st.image(img, caption=f"Illus. {idx+1}  {img.width}×{img.height}px", use_container_width=True)
+                with c2:
+                    st.markdown(f"**📐 Dimension drawings** ({len(dim_imgs)} found) → 尺寸 column")
+                    for idx, img in enumerate(dim_imgs):
+                        st.image(img, caption=f"Dim. {idx+1}  {img.width}×{img.height}px", use_container_width=True)
 
-        # Show previously extracted images if already in session
-        elif st.session_state.get("debug_images"):
-            raw_images = st.session_state["debug_images"]
-            st.info(f"Using {len(raw_images)} image(s) from last extraction (re-click button to refresh).")
-            cols = st.columns(min(len(raw_images), 4))
-            for idx, pil_img in enumerate(raw_images):
-                cols[idx % 4].image(pil_img, caption=f"Image {idx + 1}", use_container_width=True)
+        elif st.session_state.get("debug_images") or st.session_state.get("debug_dim_images"):
+            prod_imgs = st.session_state.get("debug_images", [])
+            dim_imgs  = st.session_state.get("debug_dim_images", [])
+            st.info(f"Cached: {len(prod_imgs)} illustration(s) + {len(dim_imgs)} dimension drawing(s). Re-click to refresh.")
+            c1, c2 = st.columns(2)
+            with c1:
+                for idx, img in enumerate(prod_imgs):
+                    st.image(img, caption=f"Illus. {idx+1}", use_container_width=True)
+            with c2:
+                for idx, img in enumerate(dim_imgs):
+                    st.image(img, caption=f"Dim. {idx+1}", use_container_width=True)
 
         st.divider()
         # ── 5. Excel export ────────────────────────────────────────────────────
         st.subheader("5. Test Excel export")
-        products_for_xl = st.session_state.get("debug_products", [])
-        pdf_name_for_xl = st.session_state.get("debug_pdf_name", "")
-        images_for_xl   = st.session_state.get("debug_images", [])
+        products_for_xl  = st.session_state.get("debug_products", [])
+        pdf_name_for_xl  = st.session_state.get("debug_pdf_name", "")
+        images_for_xl    = st.session_state.get("debug_images", [])      # product illustrations
+        dim_images_for_xl= st.session_state.get("debug_dim_images", [])  # dimension drawings
 
         if not products_for_xl:
             st.info("▶ Run **section 3** first to extract products, then come back here.")
         else:
             from collections import OrderedDict
 
-            # ── Chinese type translation map ───────────────────────────────────
-            _TYPE_ZH = {
-                "pendant":    "吊灯", "suspension": "吊灯", "chandelier": "吊灯",
-                "hanging":    "吊灯", "sospensione":"吊灯",
-                "wall":       "壁灯", "sconce":     "壁灯", "aplique":    "壁灯",
-                "table":      "台灯", "desk":       "台灯",
-                "floor":      "落地灯",
-                "ceiling":    "吸顶灯", "flush":    "吸顶灯", "plafon":   "吸顶灯",
-                "spot":       "射灯",  "spotlight": "射灯",
-                "downlight":  "筒灯",  "recessed":  "筒灯",
-                "track":      "轨道灯",
-                "strip":      "灯带",  "linear":    "线条灯", "profile":  "线条灯",
-                "outdoor":    "户外灯","exterior":  "户外灯",
-                "garden":     "庭院灯","street":    "路灯",
-                "panel":      "面板灯","bollard":   "地埋灯",
-            }
-
-            def _auto_zh(desc: str) -> str:
-                if not desc:
-                    return ""
-                lower = desc.lower()
-                for key, zh in _TYPE_ZH.items():
-                    if key in lower:
+            # ── Type-keyword → Chinese (also used in excel_export, kept here for UI preview)
+            _TYPE_KW = [
+                ("pendant","吊灯"),("suspension","吊灯"),("chandelier","吊灯"),("hanging","吊灯"),
+                ("wall","壁灯"),("sconce","壁灯"),("aplique","壁灯"),
+                ("table","台灯"),("desk","台灯"),
+                ("floor","落地灯"),
+                ("ceiling","吸顶灯"),("flush","吸顶灯"),("plafon","吸顶灯"),
+                ("spot","射灯"),("spotlight","射灯"),
+                ("downlight","筒灯"),("recessed","筒灯"),
+                ("track","轨道灯"),
+                ("strip","灯带"),("linear","线条灯"),("profile","线条灯"),
+                ("outdoor","户外灯"),("exterior","户外灯"),
+                ("garden","庭院灯"),("street","路灯"),
+                ("panel","面板灯"),("bollard","地埋灯"),
+            ]
+            def _auto_zh(text: str) -> str:
+                lower = (text or "").lower()
+                for kw, zh in _TYPE_KW:
+                    if kw in lower:
                         return zh
-                return desc   # keep original if no match found
+                return ""
 
             def _brand_of(prod, fallback):
                 info = prod.get("pdfs") or {}
@@ -574,7 +584,6 @@ elif page == "🛠️ Debug & Test":
             xi_contact   = col_b.text_input("联系人 Contact person",  key="xi_contact")
             xi_phone     = col_b.text_input("联系电话 Phone",         key="xi_phone")
 
-            # Global delivery time default (shown per-product but pre-filled from this)
             xi_delivery_default = st.text_input(
                 "到货时间 Default delivery time (applies to all products)",
                 value="现货", key="xi_delivery_default",
@@ -589,14 +598,16 @@ elif page == "🛠️ Debug & Test":
                     brands_order.append(b)
                 by_brand[b].append(i)
 
-            img_options = ["(no image)"] + [f"Image {j+1}" for j in range(len(images_for_xl))]
-            per_product = [None] * len(products_for_xl)
+            # Image option lists
+            prod_img_opts = ["(no image)"] + [f"Illus. {j+1}" for j in range(len(images_for_xl))]
+            dim_img_opts  = ["(no image)"] + [f"Dim. {j+1}"   for j in range(len(dim_images_for_xl))]
+            per_product   = [None] * len(products_for_xl)
 
-            st.markdown("**Products by brand** — adjust brand discount, then fine-tune per product:")
+            st.markdown("**Products by brand** — adjust brand discount, then fine-tune each product:")
             st.markdown(
                 "<small style='color:gray'>"
-                "Images are auto-assigned by position. Colour, delivery &amp; category are "
-                "pre-filled from the PDF — edit any field to override.</small>",
+                "Colour and category are auto-filled from PDF. "
+                "Dimension drawings are auto-assigned by position (Dim. 1 → product 1, etc.).</small>",
                 unsafe_allow_html=True,
             )
 
@@ -610,7 +621,6 @@ elif page == "🛠️ Debug & Test":
                     key=f"brand_disc_{brand}",
                 )
 
-                # Column headers
                 hc = st.columns([4, 1, 1])
                 hc[0].markdown("**Product / Code / Price**")
                 hc[1].markdown("**数量 Qty**")
@@ -622,95 +632,93 @@ elif page == "🛠️ Debug & Test":
                     name_str  = prod.get("name", "?")
                     price_str = f"¥{prod.get('price', '—')}"
 
-                    # ── Main row: name / qty / discount ───────────────────────
                     col = st.columns([4, 1, 1])
                     col[0].markdown(f"{i+1}. **{name_str}**  `{codes_str}`  {price_str}")
                     qty  = col[1].number_input("", min_value=0, value=1, key=f"qty_{i}",
                                                label_visibility="collapsed")
                     disc = col[2].number_input("", min_value=0.0, max_value=1.0,
-                                               value=float(brand_disc), step=0.05,
-                                               format="%.2f", key=f"disc_{i}",
-                                               label_visibility="collapsed")
+                                               value=float(brand_disc), step=0.05, format="%.2f",
+                                               key=f"disc_{i}", label_visibility="collapsed")
 
-                    # ── Detail row: colour | delivery | category | image ───────
-                    with st.expander(f"  ↳ Details & image for #{i+1}", expanded=True):
-                        dc = st.columns([2, 2, 3, 3])
+                    with st.expander(f"  ↳ Details & images for #{i+1}", expanded=True):
+                        dc = st.columns([2, 2, 3])
 
+                        # 颜色: pre-filled from PDF, fallback to "如图"
                         color = dc[0].text_input(
                             "颜色 Color",
-                            value=prod.get("color") or "",
-                            key=f"color_{i}",
-                            placeholder="e.g. White",
+                            value=prod.get("color") or "如图",
+                            key=f"color_{i}", placeholder="如图",
                         )
 
                         delivery = dc[1].text_input(
                             "到货时间 Delivery",
                             value=xi_delivery_default,
-                            key=f"delivery_{i}",
-                            placeholder="现货",
+                            key=f"delivery_{i}", placeholder="现货",
                         )
 
-                        raw_desc  = prod.get("description") or ""
-                        auto_cat  = _auto_zh(raw_desc)
-                        category  = dc[2].text_input(
+                        # 种类: auto-detect from description THEN from product name
+                        raw_desc = prod.get("description") or ""
+                        auto_cat = _auto_zh(raw_desc) or _auto_zh(prod.get("name", ""))
+                        category = dc[2].text_input(
                             "种类 Category",
-                            value=auto_cat if auto_cat else raw_desc,
-                            key=f"category_{i}",
-                            placeholder="e.g. 吊灯",
+                            value=auto_cat or raw_desc,
+                            key=f"category_{i}", placeholder="e.g. 吊灯",
                         )
 
-                        # Auto-assign: product index → image index (wrap to last)
-                        if images_for_xl:
-                            auto_img = min(i, len(images_for_xl) - 1)
-                            default_sel = auto_img + 1   # +1 because option 0 = "(no image)"
-                        else:
-                            auto_img, default_sel = -1, 0
-
-                        img_sel = dc[3].selectbox(
-                            "图片 Image",
-                            img_options,
-                            index=default_sel,
+                        st.markdown("**图片** (product photo):")
+                        img_c1, img_c2 = st.columns([3, 1])
+                        # Auto-assign: product i → illustration i (cap at last)
+                        auto_prod_img = min(i, len(images_for_xl) - 1) if images_for_xl else -1
+                        img_sel = img_c1.selectbox(
+                            "图片 Image", prod_img_opts,
+                            index=max(0, auto_prod_img + 1),
                             key=f"img_{i}",
                         )
-                        img_idx = img_options.index(img_sel) - 1   # -1 = no image
+                        img_idx = prod_img_opts.index(img_sel) - 1
+                        if img_idx >= 0:
+                            img_c2.image(images_for_xl[img_idx], width=70)
 
-                        # Show preview of selected image
-                        if img_idx >= 0 and img_idx < len(images_for_xl):
-                            dc[3].image(images_for_xl[img_idx], width=90)
-
-                        # Custom image upload (overrides selectbox)
-                        custom_file = st.file_uploader(
-                            "Or upload a different image for this product",
-                            type=["jpg", "jpeg", "png"],
-                            key=f"custom_img_{i}",
+                        st.markdown("**尺寸图** (dimension drawing → 尺寸 column + image search):")
+                        dim_c1, dim_c2 = st.columns([3, 1])
+                        # Auto-assign: product i → dim drawing i (cap at last)
+                        auto_dim = min(i, len(dim_images_for_xl) - 1) if dim_images_for_xl else -1
+                        dim_sel = dim_c1.selectbox(
+                            "尺寸 Dim. image", dim_img_opts,
+                            index=max(0, auto_dim + 1),
+                            key=f"dim_{i}",
                         )
-                        if custom_file:
-                            custom_pil = Image.open(custom_file).convert("RGB")
-                            st.image(custom_pil, width=90, caption="Custom image (will be used)")
-                        else:
-                            custom_pil = None
+                        dim_idx = dim_img_opts.index(dim_sel) - 1
+                        if dim_idx >= 0:
+                            dim_c2.image(dim_images_for_xl[dim_idx], width=70)
+
+                        # Custom upload (overrides selectbox for 图片)
+                        custom_file = st.file_uploader(
+                            "Upload custom 图片 image (overrides selectbox)",
+                            type=["jpg", "jpeg", "png"], key=f"custom_img_{i}",
+                        )
+                        custom_pil = Image.open(custom_file).convert("RGB") if custom_file else None
+                        if custom_pil:
+                            st.image(custom_pil, width=80, caption="Custom 图片 (will be used)")
 
                     per_product[i] = {
-                        "qty":        qty,
-                        "discount":   disc,
-                        "img_idx":    img_idx,
-                        "color":      color,
-                        "delivery":   delivery,
-                        "category":   category,
+                        "qty": qty, "discount": disc,
+                        "img_idx": img_idx, "dim_idx": dim_idx,
+                        "color": color, "delivery": delivery, "category": category,
                         "custom_pil": custom_pil,
                     }
 
             st.markdown("---")
             if st.button("📊 Generate Excel", type="primary"):
                 xl_products = []
-                xl_images   = {}
+                xl_prod_imgs = {}
+                xl_dim_imgs  = {}
                 for i, prod in enumerate(products_for_xl):
                     p = dict(prod)
                     if not p.get("pdfs"):
                         p["pdfs"] = {"name": pdf_name_for_xl}
                     pp = per_product[i] or {
-                        "qty": 1, "discount": 1.0, "img_idx": -1,
-                        "color": "", "delivery": "现货", "category": "",
+                        "qty": 1, "discount": 1.0, "img_idx": -1, "dim_idx": -1,
+                        "color": "如图", "delivery": "现货", "category": "",
                         "custom_pil": None,
                     }
                     p["_qty"]      = pp["qty"]
@@ -720,11 +728,15 @@ elif page == "🛠️ Debug & Test":
                     p["_category"] = pp["category"]
                     xl_products.append(p)
 
-                    # Image priority: custom upload > selectbox choice
+                    # 图片 image: custom upload > selectbox
                     if pp["custom_pil"] is not None:
-                        xl_images[i] = pp["custom_pil"]
+                        xl_prod_imgs[i] = pp["custom_pil"]
                     elif 0 <= pp["img_idx"] < len(images_for_xl):
-                        xl_images[i] = images_for_xl[pp["img_idx"]]
+                        xl_prod_imgs[i] = images_for_xl[pp["img_idx"]]
+
+                    # 尺寸 dim image: from selectbox
+                    if 0 <= pp["dim_idx"] < len(dim_images_for_xl):
+                        xl_dim_imgs[i] = dim_images_for_xl[pp["dim_idx"]]
 
                 xl_bytes = xl.build_excel_from_template(
                     xl_products,
@@ -734,7 +746,8 @@ elif page == "🛠️ Debug & Test":
                         "contact_person": xi_contact,
                         "phone":          xi_phone,
                     },
-                    product_images=xl_images,
+                    product_images=xl_prod_imgs,
+                    dim_images=xl_dim_imgs,
                 )
                 st.success(f"✅ Excel generated with {len(xl_products)} products!")
                 st.download_button(
