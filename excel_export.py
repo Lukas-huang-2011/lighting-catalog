@@ -93,6 +93,9 @@ def build_excel_from_template(
     wb = openpyxl.load_workbook(TEMPLATE_PATH)
     ws = wb.active
 
+    # ── 0. Clear any sample images baked into the template ───────────────────
+    ws._images.clear()
+
     # ── 1. Fill order header ──────────────────────────────────────────────────
     if order_info.get("order_number"):
         ws["C3"] = order_info["order_number"]
@@ -129,9 +132,11 @@ def build_excel_from_template(
         # Insert blank rows for products 2..n
         ws.insert_rows(PRODUCT_START_ROW + 1, amount=extra_rows)
 
-        # Copy style from template product row to each new row
+        # Copy style and row height from template product row to each new row
+        src_height = ws.row_dimensions[PRODUCT_START_ROW].height or 146
         for i in range(1, n):
             _copy_row_style(ws, PRODUCT_START_ROW, PRODUCT_START_ROW + i)
+            ws.row_dimensions[PRODUCT_START_ROW + i].height = src_height
 
         # Re-merge footer ranges at shifted positions
         for (r1, c1, r2, c2) in footer_merges:
@@ -174,11 +179,11 @@ def build_excel_from_template(
         # Embed product image if provided
         if i in product_images and product_images[i] is not None:
             try:
-                xl_img = _pil_to_xl_image(product_images[i])
+                # Size to fit column E (≈210px wide) and row (≈195px tall)
+                xl_img = _pil_to_xl_image(product_images[i], max_px=185)
                 col_letter = get_column_letter(COL_IMAGE)
                 xl_img.anchor = f"{col_letter}{row}"
                 ws.add_image(xl_img)
-                ws.row_dimensions[row].height = ROW_HEIGHT_PX * 0.75  # pts
             except Exception:
                 pass
 
