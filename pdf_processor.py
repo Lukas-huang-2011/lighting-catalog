@@ -118,23 +118,70 @@ def _find_split_x(img: Image.Image) -> int | None:
     return (s + e) // 2
 
 
+def _rect_from_path_items(items, pw, ph) -> "fitz.Rect | None":
+    """
+    Try to extract a rectangle from a path's item list.
+
+    Handles two cases:
+      A) Single "re" command  → items = [("re", Rect)]
+      B) 4–5 line/move commands forming a closed rectangle
+         → items like [("l",p1,p2),("l",p2,p3),("l",p3,p4),("l",p4,p1)]
+
+    Returns a fitz.Rect or None.
+    """
+    if not items:
+        return None
+
+    # Case A: explicit rectangle command (most PDF creators use this)
+    if items[0][0] == "re":
+        return fitz.Rect(items[0][1])
+
+    # Case B: 4–5 line/moveto segments that together form a closed rectangle
+    if not (4 <= len(items) <= 5):
+        return None
+
+    pts = []
+    for item in items:
+        t = item[0]
+        if t == "l" and len(item) >= 3:
+            pts.append(item[1])   # start-point of the line
+            pts.append(item[2])   # end-point of the line
+        elif t == "m" and len(item) >= 2:
+            pts.append(item[1])
+
+    if len(pts) < 4:
+        return None
+
+    xs = sorted({round(p.x) for p in pts})
+    ys = sorted({round(p.y) for p in pts})
+
+    # A rectangle has exactly 2 distinct x values and 2 distinct y values
+    if len(xs) != 2 or len(ys) != 2:
+        return None
+
+    return fitz.Rect(xs[0], ys[0], xs[1], ys[1])
+
+
 def _find_drawing_rects(page) -> list:
     """
-    Find the bordered drawing boxes by anchoring on dimension-label text.
+    Find the bordered drawing boxes for 尺寸 images.
 
-    Logic:
-      1. Extract all text spans that contain 'Ø' (e.g. "Ø60", "Ø35").
-         These labels only appear INSIDE dimension drawing boxes — never in
-         spec-text columns — so their position is a guaranteed anchor.
-      2. Collect only PURE rectangle border strokes from the page.
-         A pure rectangle path has items = [("re", fitz.Rect(...))] — a single
-         rectangle drawing command.  This gives the EXACT border coordinates,
-         unlike path["rect"] which is the bounding box of the ENTIRE path
-         content (including the lamp silhouette vector artwork).
-      3. For each Ø label, find the smallest pure-rect border that contains
-         that point.  That rectangle IS the drawing box border.
+    Layout assumption:
+      • Each product section has a bordered rectangle on the LEFT that contains
+        the lamp silhouette + Ø/height measurement labels.
+      • The spec-text columns are to the RIGHT of that box.
+      • Therefore the drawing box's right edge is always in the LEFT ~55 % of
+        the page width — this is the key position filter that rules out the
+        outer product-section border (which spans ~90 % of page width).
 
-    Returns a list of fitz.Rect sorted top → bottom, capped at 2.
+    Algorithm:
+      1. Find all Ø label positions (guaranteed inside drawing boxes).
+      2. Collect all rectangular vector paths that end before 55 % of page width
+         and are big enough to be a drawing box (≥ 8 % of page in each dim).
+      3. Anchor each Ø label to the smallest containing rect → that IS the box.
+      4. Fallback: if no Ø labels found, return all left-side rects sorted by Y.
+
+    Returns up to 2 fitz.Rect objects sorted top → bottom.
     """
     pw = page.rect.width
     ph = page.rect.height
@@ -149,49 +196,49 @@ def _find_drawing_rects(page) -> list:
                     b = span["bbox"]
                     label_pts.append(((b[0] + b[2]) / 2, (b[1] + b[3]) / 2))
 
-    if not label_pts:
-        return []
-
-    # ── 2. Collect PURE rectangle border strokes ───────────────────────────────
-    # We only want paths that consist of a single rectangle command ("re").
-    # items[0][1] on such a path gives the exact Rect of the border line itself.
-    # This filters out the lamp silhouette paths whose path["rect"] is a large
-    # bounding box encompassing the entire illustration content.
+    # ── 2. Collect rectangle-shaped border strokes in the LEFT zone ───────────
     rect_pool = []
     for path in page.get_drawings():
         items = path.get("items", [])
-        # Pure rectangle = exactly one item of type "re"
-        if len(items) != 1 or items[0][0] != "re":
+        r = _rect_from_path_items(items, pw, ph)
+        if r is None or r.is_empty or r.is_infinite:
             continue
-        r = fitz.Rect(items[0][1])          # exact border rectangle coordinates
-        if r.is_empty or r.is_infinite:
-            continue
+        # Size filter: must be a substantial box (not a tick mark or table rule)
         if r.width < pw * 0.08 or r.height < ph * 0.08:
-            continue                         # too small (table rule, tick mark)
-        if r.width > pw * 0.80:
-            continue                         # full-width page divider
+            continue
+        # *** Position filter ***
+        # Drawing boxes sit in the LEFT half of the page.
+        # The outer product-section border (drawing + text columns combined)
+        # extends to ~90 % of page width — exclude it by capping r.x1 here.
+        if r.x1 > pw * 0.58:
+            continue
         rect_pool.append(r)
 
     if not rect_pool:
         return []
 
-    # ── 3. For each label, find the smallest pure-rect border containing it ────
-    found, seen = [], set()
-    for px, py in label_pts:
-        containing = [
-            r for r in rect_pool
-            if r.x0 <= px <= r.x1 and r.y0 <= py <= r.y1
-        ]
-        if not containing:
-            continue
-        best = min(containing, key=lambda r: r.width * r.height)
-        key  = (round(best.x0), round(best.y0))   # deduplicate same box
-        if key not in seen:
-            seen.add(key)
-            found.append(best)
+    # ── 3. Anchor on Ø labels → find smallest containing rect ─────────────────
+    if label_pts:
+        found, seen = [], set()
+        for px, py in label_pts:
+            containing = [
+                r for r in rect_pool
+                if r.x0 <= px <= r.x1 and r.y0 <= py <= r.y1
+            ]
+            if not containing:
+                continue
+            best = min(containing, key=lambda r: r.width * r.height)
+            key  = (round(best.x0), round(best.y0))
+            if key not in seen:
+                seen.add(key)
+                found.append(best)
+        if found:
+            found.sort(key=lambda r: r.y0)
+            return found[:2]
 
-    found.sort(key=lambda r: r.y0)
-    return found[:2]
+    # ── 4. Fallback: return all qualifying left-zone rects sorted by Y ─────────
+    rect_pool.sort(key=lambda r: r.y0)
+    return rect_pool[:2]
 
 
 def extract_page_images(pdf_bytes: bytes, page_num: int, api_key: str = None) -> dict:
@@ -457,3 +504,4 @@ def convert_prices(pdf_bytes: bytes, from_currency: str, multiplier: float, to_c
     doc.save(buf, garbage=4, deflate=True)
     doc.close()
     return buf.getvalue()
+
