@@ -84,8 +84,8 @@ def _find_split_x(img: Image.Image) -> int | None:
     arr  = np.array(img)
     h, w = arr.shape[:2]
 
-    # Analyse only the left 65 % — beyond that we're already in text territory
-    scan_to = max(10, int(w * 0.65))
+    # Analyse only the left 80 % — beyond that we're already deep in text territory
+    scan_to = max(10, int(w * 0.80))
 
     # Column-wise fraction of dark pixels (any RGB channel < 200 = drawn content)
     dark_col = (arr[:, :scan_to, :] < 200).any(axis=2).mean(axis=0)   # (scan_to,)
@@ -106,9 +106,9 @@ def _find_split_x(img: Image.Image) -> int | None:
     if gap_start is not None:
         gaps.append((gap_start, scan_to))
 
-    # Keep only gaps that are past the left margin and at least 3 px wide
+    # Keep only gaps that are past the left margin and at least 2 px wide
     min_start = int(w * 0.15)
-    valid = [(s, e) for s, e in gaps if s >= min_start and (e - s) >= 3]
+    valid = [(s, e) for s, e in gaps if s >= min_start and (e - s) >= 2]
 
     if not valid:
         return None
