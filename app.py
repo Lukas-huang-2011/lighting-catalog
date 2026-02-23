@@ -496,45 +496,34 @@ elif page == "🛠️ Debug & Test":
 
         st.divider()
         # ── 4. Image extraction ────────────────────────────────────────────────
-        st.subheader("4. Test image extraction on this page")
+        st.subheader("4. Test 尺寸 image extraction on this page")
         st.markdown(
-            "Extracts **two image types per page**: "
-            "product illustration (left ~40% → 图片 column) and "
-            "dimension drawing with measurement labels (right ~58% → 尺寸 column + image search). "
-            "Index 0 = top product, index 1 = bottom product on the page."
+            "Extracts **dimension drawings** (lamp silhouettes with measurement labels) "
+            "from the left portion of the page → auto-embeds into the 尺寸 column. "
+            "Index 0 = top product, index 1 = bottom product. "
+            "Real-life 图片 photos are added manually in section 5."
         )
 
-        if st.button("🖼️ Extract images (illustration + dimension drawing)"):
-            result    = pdf.extract_page_images(pdf_bytes, page_num)
-            prod_imgs = result["product"]
-            dim_imgs  = result["dim"]
-            st.session_state["debug_images"]     = prod_imgs
+        if st.button("🖼️ Extract 尺寸 drawings from this page"):
+            result   = pdf.extract_page_images(pdf_bytes, page_num)
+            dim_imgs = result["dim"]
             st.session_state["debug_dim_images"] = dim_imgs
+            st.session_state["debug_images"]     = []   # 图片 is always manual
 
-            if not prod_imgs and not dim_imgs:
-                st.warning("⚠️ No images found on this page.")
+            if not dim_imgs:
+                st.warning("⚠️ No dimension drawings found on this page. Check the page layout.")
             else:
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.markdown(f"**🖼 Product illustrations** ({len(prod_imgs)} found) → 图片 column")
-                    for idx, img in enumerate(prod_imgs):
-                        st.image(img, caption=f"Illus. {idx+1}  {img.width}×{img.height}px", use_container_width=True)
-                with c2:
-                    st.markdown(f"**📐 Dimension drawings** ({len(dim_imgs)} found) → 尺寸 column")
-                    for idx, img in enumerate(dim_imgs):
-                        st.image(img, caption=f"Dim. {idx+1}  {img.width}×{img.height}px", use_container_width=True)
-
-        elif st.session_state.get("debug_images") or st.session_state.get("debug_dim_images"):
-            prod_imgs = st.session_state.get("debug_images", [])
-            dim_imgs  = st.session_state.get("debug_dim_images", [])
-            st.info(f"Cached: {len(prod_imgs)} illustration(s) + {len(dim_imgs)} dimension drawing(s). Re-click to refresh.")
-            c1, c2 = st.columns(2)
-            with c1:
-                for idx, img in enumerate(prod_imgs):
-                    st.image(img, caption=f"Illus. {idx+1}", use_container_width=True)
-            with c2:
+                st.success(f"📐 {len(dim_imgs)} dimension drawing(s) extracted → will auto-embed in 尺寸 column")
+                cols = st.columns(len(dim_imgs))
                 for idx, img in enumerate(dim_imgs):
-                    st.image(img, caption=f"Dim. {idx+1}", use_container_width=True)
+                    cols[idx].image(img, caption=f"尺寸 {idx+1}  {img.width}×{img.height}px", use_container_width=True)
+
+        elif st.session_state.get("debug_dim_images"):
+            dim_imgs = st.session_state["debug_dim_images"]
+            st.info(f"Cached: {len(dim_imgs)} dimension drawing(s). Re-click to refresh.")
+            cols = st.columns(len(dim_imgs))
+            for idx, img in enumerate(dim_imgs):
+                cols[idx].image(img, caption=f"尺寸 {idx+1}", use_container_width=True)
 
         st.divider()
         # ── 5. Excel export ────────────────────────────────────────────────────
