@@ -68,6 +68,56 @@ def _find_split_y(full: Image.Image) -> tuple:
     return best_y, best_brightness
 
 
+def _find_split_x(img: Image.Image) -> int | None:
+    """
+    Find where the lamp drawing ends and the spec-text columns begin, by scanning
+    for the rightmost clear vertical gap (nearly empty column band) in the left
+    65 % of the cropped rect image.
+
+    The lamp silhouette is compact and centred; to its right there is usually a
+    white gap before the "Light source / Type / Volt …" text block starts.
+
+    Returns the x-pixel coordinate to crop to (keep everything left of that point),
+    or None if no clear gap is found.
+    """
+    import numpy as np
+    arr  = np.array(img)
+    h, w = arr.shape[:2]
+
+    # Analyse only the left 65 % — beyond that we're already in text territory
+    scan_to = max(10, int(w * 0.65))
+
+    # Column-wise fraction of dark pixels (any RGB channel < 200 = drawn content)
+    dark_col = (arr[:, :scan_to, :] < 200).any(axis=2).mean(axis=0)   # (scan_to,)
+
+    # Tag each column as "gap" if < 4 % of its pixels are dark
+    is_gap = dark_col < 0.04
+
+    # Collect runs of consecutive gap-columns
+    gaps, gap_start = [], None
+    for x in range(scan_to):
+        if is_gap[x]:
+            if gap_start is None:
+                gap_start = x
+        else:
+            if gap_start is not None:
+                gaps.append((gap_start, x))
+                gap_start = None
+    if gap_start is not None:
+        gaps.append((gap_start, scan_to))
+
+    # Keep only gaps that are past the left margin and at least 3 px wide
+    min_start = int(w * 0.15)
+    valid = [(s, e) for s, e in gaps if s >= min_start and (e - s) >= 3]
+
+    if not valid:
+        return None
+
+    # Return the centre of the rightmost valid gap
+    s, e = valid[-1]
+    return (s + e) // 2
+
+
 def _find_drawing_rects(page) -> list:
     """
     Use PyMuPDF vector-drawing detection to find the bordered rectangular frames
@@ -176,8 +226,21 @@ def extract_page_images(pdf_bytes: bytes, page_num: int) -> dict:
             x1 = min(px_w, int(r.x1 * sx) + pad)
             y1 = min(px_h, int(r.y1 * sy) + pad)
             crop = full.crop((x0, y0, x1, y1))
-            if crop.width > 40 and crop.height > 40:
-                dim_imgs.append(crop)
+            if crop.width <= 40 or crop.height <= 40:
+                continue
+
+            # The detected rect may include spec-text columns to the right of the
+            # lamp drawing.  Find the vertical gap where drawing ends → text starts
+            # and crop there so we keep only the dimension drawing itself.
+            split_x = _find_split_x(crop)
+            if split_x is not None and split_x > crop.width * 0.20:
+                crop = crop.crop((0, 0, split_x + 8, crop.height))
+
+            # Final whitespace trim (removes header text above/below the drawing)
+            trimmed = _trim_whitespace_dim(crop)
+            if trimmed is not None:
+                dim_imgs.append(trimmed)
+
         if dim_imgs:
             return {"product": [], "dim": dim_imgs}
 
