@@ -186,19 +186,17 @@ def _find_drawing_rects(page) -> list:
     return unique[:2]
 
 
-def extract_page_images(pdf_bytes: bytes, page_num: int) -> dict:
+def extract_page_images(pdf_bytes: bytes, page_num: int, api_key: str = None) -> dict:
     """
     Extract dimension drawings from one PDF page for the 尺寸 column.
 
     Strategy (best → fallback):
-      1. PyMuPDF rect detection  — finds the exact bordered frame around each
-         lamp silhouette + measurement labels, then crops the rendered image
-         precisely to those coordinates.  Works for vector-drawing catalogs.
-      2. Zone fallback — crops the left ~35 % of each product row.  Used only
-         if no suitable rect frames are found on the page.
+      1. AI vision  — asks GLM-4V-Flash for exact bounding-box percentages of
+         each dimension drawing.  Precise, layout-independent.  Requires api_key.
+      2. PyMuPDF rect detection — finds bordered frames via vector drawing data.
+      3. Zone fallback — crops the left ~35 % of each product row.
 
-    Real-life product photos (图片) are NOT extracted — they must be uploaded
-    manually by the user.
+    Real-life product photos (图片) are NOT extracted — must be uploaded manually.
 
     Returns:
         {
@@ -206,23 +204,41 @@ def extract_page_images(pdf_bytes: bytes, page_num: int) -> dict:
           'dim':     [PIL.Image, ...], # 1–2 尺寸 drawings, index 0=top, 1=bottom
         }
     """
-    # ── Open PDF and try vector-rect detection ────────────────────────────────
-    doc  = fitz.open(stream=pdf_bytes, filetype="pdf")
-    page = doc[page_num]
+    # ── Render page at 150 DPI (needed by all paths) ─────────────────────────
+    full   = _render_page_full(pdf_bytes, page_num, dpi=150)
+    px_w, px_h = full.size
+
+    # ── Path 1: AI bounding-box detection ────────────────────────────────────
+    if api_key:
+        import ai_extractor as ai
+        boxes = ai.find_dim_boxes(api_key, full)
+        if boxes:
+            pad = 6
+            dim_imgs = []
+            for b in boxes:
+                x0 = max(0,    int(b["x0"] / 100 * px_w) - pad)
+                y0 = max(0,    int(b["y0"] / 100 * px_h) - pad)
+                x1 = min(px_w, int(b["x1"] / 100 * px_w) + pad)
+                y1 = min(px_h, int(b["y1"] / 100 * px_h) + pad)
+                crop = full.crop((x0, y0, x1, y1))
+                if crop.width > 30 and crop.height > 30:
+                    dim_imgs.append(crop)
+            if dim_imgs:
+                return {"product": [], "dim": dim_imgs}
+
+    # ── Path 2: PyMuPDF vector-rect detection ─────────────────────────────────
+    doc    = fitz.open(stream=pdf_bytes, filetype="pdf")
+    page   = doc[page_num]
     page_w = page.rect.width
     page_h = page.rect.height
     rects  = _find_drawing_rects(page)
     doc.close()
 
-    # ── Render page at 150 DPI ────────────────────────────────────────────────
-    full   = _render_page_full(pdf_bytes, page_num, dpi=150)
-    px_w, px_h = full.size
-    sx = px_w / page_w   # scale factor: PDF points → pixels
+    sx = px_w / page_w
     sy = px_h / page_h
 
-    # ── Path 1: precise crop to detected frames ───────────────────────────────
     if rects:
-        pad = 10   # px — small breathing room around the frame
+        pad = 10
         dim_imgs = []
         for r in rects:
             x0 = max(0,    int(r.x0 * sx) - pad)
@@ -232,37 +248,25 @@ def extract_page_images(pdf_bytes: bytes, page_num: int) -> dict:
             crop = full.crop((x0, y0, x1, y1))
             if crop.width <= 40 or crop.height <= 40:
                 continue
-
-            # Only apply the vertical split if the crop is still wide — meaning we
-            # landed on the outer section border (which includes spec-text columns).
-            # If the rect is already the tight inner drawing box (< 28 % of page
-            # width) we skip the split so we don't accidentally clip annotations.
             if crop.width > px_w * 0.28:
                 split_x = _find_split_x(crop)
                 if split_x is not None and split_x > crop.width * 0.20:
                     crop = crop.crop((0, 0, split_x + 8, crop.height))
-
-            # Final whitespace trim (removes any header text above/below)
             trimmed = _trim_whitespace_dim(crop)
             if trimmed is not None:
                 dim_imgs.append(trimmed)
-
         if dim_imgs:
             return {"product": [], "dim": dim_imgs}
 
-    # ── Path 2: zone-based fallback ───────────────────────────────────────────
-    draw_right = int(px_w * 0.35)   # left 35 % — tighter than before
+    # ── Path 3: zone-based fallback ───────────────────────────────────────────
+    draw_right = int(px_w * 0.35)
     best_y, best_brightness = _find_split_y(full)
     two_products = best_brightness > 235 and (0.25 * px_h < best_y < 0.75 * px_h)
-
-    if two_products:
-        regions = [
-            full.crop((0, 0,      draw_right, best_y)),
-            full.crop((0, best_y, draw_right, px_h)),
-        ]
-    else:
-        regions = [full.crop((0, 0, draw_right, px_h))]
-
+    regions = (
+        [full.crop((0, 0, draw_right, best_y)), full.crop((0, best_y, draw_right, px_h))]
+        if two_products else
+        [full.crop((0, 0, draw_right, px_h))]
+    )
     dim_imgs = [t for r in regions if (t := _trim_whitespace_dim(r)) is not None]
     return {"product": [], "dim": dim_imgs}
 
