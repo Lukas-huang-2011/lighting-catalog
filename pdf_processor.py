@@ -68,16 +68,83 @@ def _find_split_y(full: Image.Image) -> tuple:
     return best_y, best_brightness
 
 
+def _find_drawing_rects(page) -> list:
+    """
+    Use PyMuPDF vector-drawing detection to find the bordered rectangular frames
+    that surround product dimension drawings (lamp silhouettes + measurement labels).
+
+    Filters:
+      • Must have a visible stroke (a real border, not an invisible fill)
+      • Located mostly in the left ~60 % of the page (drawings are on the left)
+      • At least 10 % of page width AND 10 % of page height
+      • Not a full-page border (< 80 % of page in either dimension)
+      • Not too elongated (aspect ratio < 2.5 — rules out thin table rows)
+
+    Returns a list of fitz.Rect sorted top → bottom, capped at 2.
+    """
+    pw = page.rect.width
+    ph = page.rect.height
+    candidates = []
+
+    for path in page.get_drawings():
+        r = path.get("rect")
+        if r is None:
+            continue
+        # Must have a visible stroke color
+        if path.get("color") is None:
+            continue
+        rw, rh = r.width, r.height
+        # Size gates
+        if rw < pw * 0.10 or rh < ph * 0.10:
+            continue          # too small — a tick mark or table rule
+        if rw > pw * 0.80 or rh > ph * 0.80:
+            continue          # too large — a page border or full-width divider
+        # Aspect-ratio gate (not a thin horizontal or vertical strip)
+        if rw / max(rh, 1) > 2.5 or rh / max(rw, 1) > 2.5:
+            continue
+        # Must be mostly in the left half of the page
+        cx = (r.x0 + r.x1) / 2
+        if cx > pw * 0.60:
+            continue
+        candidates.append(r)
+
+    if not candidates:
+        return []
+
+    # Deduplicate: if two rects overlap > 50 % of the smaller one, keep the larger
+    candidates.sort(key=lambda r: r.width * r.height, reverse=True)
+    unique = []
+    for b in candidates:
+        b_area = b.width * b.height
+        dominated = False
+        for u in unique:
+            isect = b & u   # fitz intersection
+            if not isect.is_empty:
+                isect_area = isect.width * isect.height
+                if isect_area / max(b_area, 1) > 0.50:
+                    dominated = True
+                    break
+        if not dominated:
+            unique.append(b)
+
+    # Sort top → bottom so index 0 = top product, 1 = bottom product
+    unique.sort(key=lambda r: r.y0)
+    return unique[:2]
+
+
 def extract_page_images(pdf_bytes: bytes, page_num: int) -> dict:
     """
     Extract dimension drawings from one PDF page for the 尺寸 column.
 
-    Layout (typical lighting catalog, vector-graphic style):
-      LEFT ~47%  — lamp silhouette with measurement labels (Ø, H, W…) → 尺寸
-      RIGHT side — spec/price tables → ignored
+    Strategy (best → fallback):
+      1. PyMuPDF rect detection  — finds the exact bordered frame around each
+         lamp silhouette + measurement labels, then crops the rendered image
+         precisely to those coordinates.  Works for vector-drawing catalogs.
+      2. Zone fallback — crops the left ~35 % of each product row.  Used only
+         if no suitable rect frames are found on the page.
 
-    Real-life product photos (图片) are NOT extracted from the PDF;
-    they must be uploaded manually by the user.
+    Real-life product photos (图片) are NOT extracted — they must be uploaded
+    manually by the user.
 
     Returns:
         {
@@ -85,27 +152,49 @@ def extract_page_images(pdf_bytes: bytes, page_num: int) -> dict:
           'dim':     [PIL.Image, ...], # 1–2 尺寸 drawings, index 0=top, 1=bottom
         }
     """
-    # ── Render page ───────────────────────────────────────────────────────────
-    full = _render_page_full(pdf_bytes, page_num, dpi=150)
-    w, h = full.size
+    # ── Open PDF and try vector-rect detection ────────────────────────────────
+    doc  = fitz.open(stream=pdf_bytes, filetype="pdf")
+    page = doc[page_num]
+    page_w = page.rect.width
+    page_h = page.rect.height
+    rects  = _find_drawing_rects(page)
+    doc.close()
 
-    # Left zone: lamp silhouette + measurement annotations
-    draw_right = int(w * 0.47)
+    # ── Render page at 150 DPI ────────────────────────────────────────────────
+    full   = _render_page_full(pdf_bytes, page_num, dpi=150)
+    px_w, px_h = full.size
+    sx = px_w / page_w   # scale factor: PDF points → pixels
+    sy = px_h / page_h
 
-    # Detect horizontal separator between two stacked products
+    # ── Path 1: precise crop to detected frames ───────────────────────────────
+    if rects:
+        pad = 10   # px — small breathing room around the frame
+        dim_imgs = []
+        for r in rects:
+            x0 = max(0,    int(r.x0 * sx) - pad)
+            y0 = max(0,    int(r.y0 * sy) - pad)
+            x1 = min(px_w, int(r.x1 * sx) + pad)
+            y1 = min(px_h, int(r.y1 * sy) + pad)
+            crop = full.crop((x0, y0, x1, y1))
+            if crop.width > 40 and crop.height > 40:
+                dim_imgs.append(crop)
+        if dim_imgs:
+            return {"product": [], "dim": dim_imgs}
+
+    # ── Path 2: zone-based fallback ───────────────────────────────────────────
+    draw_right = int(px_w * 0.35)   # left 35 % — tighter than before
     best_y, best_brightness = _find_split_y(full)
-    two_products = best_brightness > 235 and (0.25 * h < best_y < 0.75 * h)
+    two_products = best_brightness > 235 and (0.25 * px_h < best_y < 0.75 * px_h)
 
     if two_products:
         regions = [
             full.crop((0, 0,      draw_right, best_y)),
-            full.crop((0, best_y, draw_right, h)),
+            full.crop((0, best_y, draw_right, px_h)),
         ]
     else:
-        regions = [full.crop((0, 0, draw_right, h))]
+        regions = [full.crop((0, 0, draw_right, px_h))]
 
     dim_imgs = [t for r in regions if (t := _trim_whitespace_dim(r)) is not None]
-
     return {"product": [], "dim": dim_imgs}
 
 
