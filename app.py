@@ -505,7 +505,9 @@ elif page == "🛠️ Debug & Test":
         )
 
         if st.button("🖼️ Extract 尺寸 drawings from this page"):
-            result   = pdf.extract_page_images(pdf_bytes, page_num)
+            _api_key = st.secrets.get("ZHIPU_API_KEY", "") or None
+            with st.spinner("Asking AI to locate dimension drawings…"):
+                result = pdf.extract_page_images(pdf_bytes, page_num, api_key=_api_key)
             dim_imgs = result["dim"]
             st.session_state["debug_dim_images"] = dim_imgs
             st.session_state["debug_images"]     = []   # 图片 is always manual
