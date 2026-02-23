@@ -309,3 +309,46 @@ def describe_image(api_key: str, image: Image.Image) -> str:
     prompt = "Describe this lighting product briefly: type, shape, color, style, any visible codes."
     text, _, _ = _call_best(api_key, image, prompt)
     return text
+
+
+DIM_BOX_PROMPT = """This is a page from a lighting product catalog.
+
+Find every DIMENSION DRAWING on this page. A dimension drawing is a technical outline/silhouette of a lamp or light fixture (pendant, wall lamp, floor lamp, etc.) that has measurement annotations around it — numbers like Ø60, Ø35, H25, W40, etc. These drawings are always inside a clearly bordered rectangular box, located on the LEFT side of each product section.
+
+For each dimension drawing box, return its bounding box as percentages of the full image width and height.
+
+Return ONLY a JSON array, nothing else:
+[{"x0": 5, "y0": 8, "x1": 35, "y1": 50}, {"x0": 5, "y0": 53, "x1": 35, "y1": 97}]
+
+Rules:
+- x0,y0 = top-left of the drawing box (percentages 0-100)
+- x1,y1 = bottom-right of the drawing box (percentages 0-100)
+- Include ONLY the bordered box containing the lamp silhouette and measurement labels
+- Do NOT include product name text, spec tables, "Light source", "Type", "Volt" text, or any accessory lists
+- Crop tightly to the drawing box border
+- If no dimension drawings exist on this page, return []
+- Sort top to bottom"""
+
+
+def find_dim_boxes(api_key: str, page_image: Image.Image) -> list:
+    """
+    Ask the vision AI to locate dimension drawing bounding boxes on a catalog page.
+
+    Returns a list of dicts: [{"x0": %, "y0": %, "x1": %, "y1": %}, ...]
+    Percentages are 0-100 relative to the full image size.
+    Returns [] on failure.
+    """
+    text, err, _ = _call_best(api_key, page_image, DIM_BOX_PROMPT)
+    if err or not text:
+        return []
+    boxes = _parse_json(text)
+    # Validate: each entry must have x0,y0,x1,y1 all as numbers in 0-100
+    valid = []
+    for b in boxes:
+        try:
+            x0, y0, x1, y1 = float(b["x0"]), float(b["y0"]), float(b["x1"]), float(b["y1"])
+            if 0 <= x0 < x1 <= 100 and 0 <= y0 < y1 <= 100:
+                valid.append({"x0": x0, "y0": y0, "x1": x1, "y1": y1})
+        except (KeyError, TypeError, ValueError):
+            continue
+    return valid
