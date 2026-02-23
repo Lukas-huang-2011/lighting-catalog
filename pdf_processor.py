@@ -161,17 +161,21 @@ def _find_drawing_rects(page) -> list:
     if not candidates:
         return []
 
-    # Deduplicate: if two rects overlap > 50 % of the smaller one, keep the larger
-    candidates.sort(key=lambda r: r.width * r.height, reverse=True)
+    # Sort SMALLEST first — we want the inner drawing box (lamp only),
+    # NOT the larger outer product-section border that also wraps the spec text.
+    candidates.sort(key=lambda r: r.width * r.height)
+
     unique = []
     for b in candidates:
-        b_area = b.width * b.height
         dominated = False
         for u in unique:
-            isect = b & u   # fitz intersection
+            # u was accepted earlier (smaller).
+            # If u sits mostly inside b, then b is b's outer container → discard b.
+            u_area = u.width * u.height
+            isect  = b & u
             if not isect.is_empty:
                 isect_area = isect.width * isect.height
-                if isect_area / max(b_area, 1) > 0.50:
+                if isect_area / max(u_area, 1) > 0.80:
                     dominated = True
                     break
         if not dominated:
@@ -229,14 +233,16 @@ def extract_page_images(pdf_bytes: bytes, page_num: int) -> dict:
             if crop.width <= 40 or crop.height <= 40:
                 continue
 
-            # The detected rect may include spec-text columns to the right of the
-            # lamp drawing.  Find the vertical gap where drawing ends → text starts
-            # and crop there so we keep only the dimension drawing itself.
-            split_x = _find_split_x(crop)
-            if split_x is not None and split_x > crop.width * 0.20:
-                crop = crop.crop((0, 0, split_x + 8, crop.height))
+            # Only apply the vertical split if the crop is still wide — meaning we
+            # landed on the outer section border (which includes spec-text columns).
+            # If the rect is already the tight inner drawing box (< 28 % of page
+            # width) we skip the split so we don't accidentally clip annotations.
+            if crop.width > px_w * 0.28:
+                split_x = _find_split_x(crop)
+                if split_x is not None and split_x > crop.width * 0.20:
+                    crop = crop.crop((0, 0, split_x + 8, crop.height))
 
-            # Final whitespace trim (removes header text above/below the drawing)
+            # Final whitespace trim (removes any header text above/below)
             trimmed = _trim_whitespace_dim(crop)
             if trimmed is not None:
                 dim_imgs.append(trimmed)
