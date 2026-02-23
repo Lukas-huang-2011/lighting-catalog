@@ -70,72 +70,43 @@ def _find_split_y(full: Image.Image) -> tuple:
 
 def extract_page_images(pdf_bytes: bytes, page_num: int) -> dict:
     """
-    Extract product illustration images AND dimension-drawing images from one page.
+    Extract dimension drawings from one PDF page for the 尺寸 column.
 
-    Layout assumption (typical lighting catalog, vector-graphic style):
-      LEFT  ~40%  — product illustration (for 图片 column)
-      RIGHT ~58%  — dimension drawing with measurement labels (for 尺寸 column + image search)
+    Layout (typical lighting catalog, vector-graphic style):
+      LEFT ~47%  — lamp silhouette with measurement labels (Ø, H, W…) → 尺寸
+      RIGHT side — spec/price tables → ignored
+
+    Real-life product photos (图片) are NOT extracted from the PDF;
+    they must be uploaded manually by the user.
 
     Returns:
         {
-          'product': [PIL.Image, ...],   # 1–2 images, index 0=top product, 1=bottom product
-          'dim':     [PIL.Image, ...],   # same structure, right-side dimension drawings
+          'product': [],               # always empty — 图片 is manual
+          'dim':     [PIL.Image, ...], # 1–2 尺寸 drawings, index 0=top, 1=bottom
         }
-
-    If the PDF has embedded raster images (photo-based catalogs), those are returned
-    in 'product' and 'dim' is empty — embedded images can't be split by zone.
     """
-    # ── Try embedded raster images first ─────────────────────────────────────
-    doc  = fitz.open(stream=pdf_bytes, filetype="pdf")
-    page = doc[page_num]
-    rasters, seen = [], set()
-    for img_info in page.get_images(full=True):
-        xref = img_info[0]
-        if xref in seen:
-            continue
-        seen.add(xref)
-        try:
-            base_image = doc.extract_image(xref)
-            img = Image.open(io.BytesIO(base_image["image"])).convert("RGB")
-            if img.width > 100 and img.height > 100:
-                rasters.append(img)
-        except Exception:
-            pass
-    doc.close()
-
-    if rasters:
-        # Photo-based catalog — return embedded images as product photos; no dim drawings
-        return {"product": rasters[:2], "dim": []}
-
-    # ── Fallback: render page and crop by zone ────────────────────────────────
+    # ── Render page ───────────────────────────────────────────────────────────
     full = _render_page_full(pdf_bytes, page_num, dpi=150)
     w, h = full.size
 
-    # Column boundaries
-    prod_right  = int(w * 0.40)   # right edge of illustration zone
-    dim_left    = int(w * 0.42)   # left  edge of dimension-drawing zone
+    # Left zone: lamp silhouette + measurement annotations
+    draw_right = int(w * 0.47)
 
-    # Detect horizontal separator (two products stacked vertically)
+    # Detect horizontal separator between two stacked products
     best_y, best_brightness = _find_split_y(full)
-    two_products = best_brightness > 235
+    two_products = best_brightness > 235 and (0.25 * h < best_y < 0.75 * h)
 
     if two_products:
-        prod_regions = [
-            full.crop((0,        0,      prod_right, best_y)),
-            full.crop((0,        best_y, prod_right, h)),
-        ]
-        dim_regions = [
-            full.crop((dim_left, 0,      w,          best_y)),
-            full.crop((dim_left, best_y, w,          h)),
+        regions = [
+            full.crop((0, 0,      draw_right, best_y)),
+            full.crop((0, best_y, draw_right, h)),
         ]
     else:
-        prod_regions = [full.crop((0,        0, prod_right, h))]
-        dim_regions  = [full.crop((dim_left, 0, w,          h))]
+        regions = [full.crop((0, 0, draw_right, h))]
 
-    product_imgs = [t for r in prod_regions if (t := _trim_whitespace(r))      is not None]
-    dim_imgs     = [t for r in dim_regions  if (t := _trim_whitespace_dim(r))  is not None]
+    dim_imgs = [t for r in regions if (t := _trim_whitespace_dim(r)) is not None]
 
-    return {"product": product_imgs, "dim": dim_imgs}
+    return {"product": [], "dim": dim_imgs}
 
 
 def extract_images_from_page(pdf_bytes: bytes, page_num: int) -> list:
