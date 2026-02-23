@@ -120,70 +120,68 @@ def _find_split_x(img: Image.Image) -> int | None:
 
 def _find_drawing_rects(page) -> list:
     """
-    Use PyMuPDF vector-drawing detection to find the bordered rectangular frames
-    that surround product dimension drawings (lamp silhouettes + measurement labels).
+    Find the bordered drawing boxes by anchoring on dimension-label text.
 
-    Filters:
-      • Must have a visible stroke (a real border, not an invisible fill)
-      • Located mostly in the left ~60 % of the page (drawings are on the left)
-      • At least 10 % of page width AND 10 % of page height
-      • Not a full-page border (< 80 % of page in either dimension)
-      • Not too elongated (aspect ratio < 2.5 — rules out thin table rows)
+    Logic:
+      1. Extract all text spans that contain 'Ø' (e.g. "Ø60", "Ø35").
+         These labels only appear INSIDE dimension drawing boxes — never in
+         spec-text columns — so their position is a guaranteed anchor.
+      2. Collect every stroked rectangle on the page.
+      3. For each Ø label, find the smallest stroked rectangle that contains
+         that point.  That rectangle IS the drawing box border.
 
     Returns a list of fitz.Rect sorted top → bottom, capped at 2.
     """
     pw = page.rect.width
     ph = page.rect.height
-    candidates = []
 
+    # ── 1. Find Ø label positions ─────────────────────────────────────────────
+    label_pts = []
+    for block in page.get_text("dict").get("blocks", []):
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                txt = span.get("text", "")
+                if "Ø" in txt or "ø" in txt:
+                    b = span["bbox"]
+                    label_pts.append(((b[0] + b[2]) / 2, (b[1] + b[3]) / 2))
+
+    if not label_pts:
+        return []
+
+    # ── 2. Collect stroked rectangles (min 8 % of page in each dimension) ─────
+    rect_pool = []
     for path in page.get_drawings():
+        if path.get("color") is None:       # no visible stroke → skip
+            continue
         r = path.get("rect")
         if r is None:
             continue
-        # Must have a visible stroke color
-        if path.get("color") is None:
-            continue
-        rw, rh = r.width, r.height
-        # Size gates
-        if rw < pw * 0.10 or rh < ph * 0.10:
-            continue          # too small — a tick mark or table rule
-        if rw > pw * 0.80 or rh > ph * 0.80:
-            continue          # too large — a page border or full-width divider
-        # Aspect-ratio gate (not a thin horizontal or vertical strip)
-        if rw / max(rh, 1) > 2.5 or rh / max(rw, 1) > 2.5:
-            continue
-        # Must be mostly in the left half of the page
-        cx = (r.x0 + r.x1) / 2
-        if cx > pw * 0.60:
-            continue
-        candidates.append(r)
+        if r.width < pw * 0.08 or r.height < ph * 0.08:
+            continue                         # too small (table rule, tick mark)
+        if r.width > pw * 0.80:
+            continue                         # full-width divider
+        rect_pool.append(r)
 
-    if not candidates:
+    if not rect_pool:
         return []
 
-    # Sort SMALLEST first — we want the inner drawing box (lamp only),
-    # NOT the larger outer product-section border that also wraps the spec text.
-    candidates.sort(key=lambda r: r.width * r.height)
+    # ── 3. For each label, find the smallest containing rectangle ─────────────
+    found, seen = [], set()
+    for px, py in label_pts:
+        containing = [
+            r for r in rect_pool
+            if r.x0 <= px <= r.x1 and r.y0 <= py <= r.y1
+        ]
+        if not containing:
+            continue
+        best = min(containing, key=lambda r: r.width * r.height)
+        key  = (round(best.x0), round(best.y0))   # deduplicate same box
+        if key not in seen:
+            seen.add(key)
+            found.append(best)
 
-    unique = []
-    for b in candidates:
-        dominated = False
-        for u in unique:
-            # u was accepted earlier (smaller).
-            # If u sits mostly inside b, then b is b's outer container → discard b.
-            u_area = u.width * u.height
-            isect  = b & u
-            if not isect.is_empty:
-                isect_area = isect.width * isect.height
-                if isect_area / max(u_area, 1) > 0.80:
-                    dominated = True
-                    break
-        if not dominated:
-            unique.append(b)
-
-    # Sort top → bottom so index 0 = top product, 1 = bottom product
-    unique.sort(key=lambda r: r.y0)
-    return unique[:2]
+    found.sort(key=lambda r: r.y0)
+    return found[:2]
 
 
 def extract_page_images(pdf_bytes: bytes, page_num: int, api_key: str = None) -> dict:
@@ -238,7 +236,7 @@ def extract_page_images(pdf_bytes: bytes, page_num: int, api_key: str = None) ->
     sy = px_h / page_h
 
     if rects:
-        pad = 10
+        pad = 8   # small breathing room around the exact box border
         dim_imgs = []
         for r in rects:
             x0 = max(0,    int(r.x0 * sx) - pad)
@@ -246,15 +244,8 @@ def extract_page_images(pdf_bytes: bytes, page_num: int, api_key: str = None) ->
             x1 = min(px_w, int(r.x1 * sx) + pad)
             y1 = min(px_h, int(r.y1 * sy) + pad)
             crop = full.crop((x0, y0, x1, y1))
-            if crop.width <= 40 or crop.height <= 40:
-                continue
-            if crop.width > px_w * 0.28:
-                split_x = _find_split_x(crop)
-                if split_x is not None and split_x > crop.width * 0.20:
-                    crop = crop.crop((0, 0, split_x + 8, crop.height))
-            trimmed = _trim_whitespace_dim(crop)
-            if trimmed is not None:
-                dim_imgs.append(trimmed)
+            if crop.width > 40 and crop.height > 40:
+                dim_imgs.append(crop)
         if dim_imgs:
             return {"product": [], "dim": dim_imgs}
 
