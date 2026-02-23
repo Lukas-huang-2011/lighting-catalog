@@ -504,4 +504,3 @@ def convert_prices(pdf_bytes: bytes, from_currency: str, multiplier: float, to_c
     doc.save(buf, garbage=4, deflate=True)
     doc.close()
     return buf.getvalue()
-
