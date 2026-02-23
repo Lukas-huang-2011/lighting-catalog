@@ -126,8 +126,12 @@ def _find_drawing_rects(page) -> list:
       1. Extract all text spans that contain 'Ø' (e.g. "Ø60", "Ø35").
          These labels only appear INSIDE dimension drawing boxes — never in
          spec-text columns — so their position is a guaranteed anchor.
-      2. Collect every stroked rectangle on the page.
-      3. For each Ø label, find the smallest stroked rectangle that contains
+      2. Collect only PURE rectangle border strokes from the page.
+         A pure rectangle path has items = [("re", fitz.Rect(...))] — a single
+         rectangle drawing command.  This gives the EXACT border coordinates,
+         unlike path["rect"] which is the bounding box of the ENTIRE path
+         content (including the lamp silhouette vector artwork).
+      3. For each Ø label, find the smallest pure-rect border that contains
          that point.  That rectangle IS the drawing box border.
 
     Returns a list of fitz.Rect sorted top → bottom, capped at 2.
@@ -148,24 +152,30 @@ def _find_drawing_rects(page) -> list:
     if not label_pts:
         return []
 
-    # ── 2. Collect stroked rectangles (min 8 % of page in each dimension) ─────
+    # ── 2. Collect PURE rectangle border strokes ───────────────────────────────
+    # We only want paths that consist of a single rectangle command ("re").
+    # items[0][1] on such a path gives the exact Rect of the border line itself.
+    # This filters out the lamp silhouette paths whose path["rect"] is a large
+    # bounding box encompassing the entire illustration content.
     rect_pool = []
     for path in page.get_drawings():
-        if path.get("color") is None:       # no visible stroke → skip
+        items = path.get("items", [])
+        # Pure rectangle = exactly one item of type "re"
+        if len(items) != 1 or items[0][0] != "re":
             continue
-        r = path.get("rect")
-        if r is None:
+        r = fitz.Rect(items[0][1])          # exact border rectangle coordinates
+        if r.is_empty or r.is_infinite:
             continue
         if r.width < pw * 0.08 or r.height < ph * 0.08:
             continue                         # too small (table rule, tick mark)
         if r.width > pw * 0.80:
-            continue                         # full-width divider
+            continue                         # full-width page divider
         rect_pool.append(r)
 
     if not rect_pool:
         return []
 
-    # ── 3. For each label, find the smallest containing rectangle ─────────────
+    # ── 3. For each label, find the smallest pure-rect border containing it ────
     found, seen = [], set()
     for px, py in label_pts:
         containing = [
