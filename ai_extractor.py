@@ -17,85 +17,84 @@ API_URL = "https://api.moonshot.cn/v1/chat/completions"
 
 # Moonshot vision model
 CANDIDATES = [
-        "moonshot-v1-8k-vision-preview",
-        "moonshot-v1-32k-vision-preview",
+    "moonshot-v1-8k-vision-preview",
+    "moonshot-v1-32k-vision-preview",
 ]
 
 _working_model = {"model": None}
 
 
 def get_client():
-        api_key = st.secrets.get("MOONSHOT_API_KEY", "")
-        if not api_key:
-                    st.error(
-                                    "MOONSHOT_API_KEY not found in Streamlit secrets. "
-                                    "Get a key at platform.moonshot.cn"
-                    )
-                    st.stop()
-                return api_key
+    api_key = st.secrets.get("MOONSHOT_API_KEY", "")
+    if not api_key:
+        st.error(
+            "MOONSHOT_API_KEY not found in Streamlit secrets. "
+            "Get a key at platform.moonshot.cn"
+        )
+        st.stop()
+    return api_key
 
 
 def image_to_base64(image: Image.Image) -> tuple:
-        """Returns (base64_string, mime_type).
-            Resizes and compresses to JPEG.
-                Keep max side at 1024px, quality 75.
-                    """
+    """Returns (base64_string, mime_type).
+    Resizes and compresses to JPEG.
+    Keep max side at 1024px, quality 75.
+    """
     img = image.convert("RGB")
     max_side = 1024
     w, h = img.size
     if max(w, h) > max_side:
-                scale = max_side / max(w, h)
-                img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
-            buf = io.BytesIO()
+        scale = max_side / max(w, h)
+        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+    buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=75)
     b64 = base64.b64encode(buf.getvalue()).decode()
     kb = len(buf.getvalue()) / 1024
     # If still too large, compress further
     if kb > 800:
-                buf2 = io.BytesIO()
-                img.save(buf2, format="JPEG", quality=50)
-                b64 = base64.b64encode(buf2.getvalue()).decode()
-            return b64, "image/jpeg"
-
+        buf2 = io.BytesIO()
+        img.save(buf2, format="JPEG", quality=50)
+        b64 = base64.b64encode(buf2.getvalue()).decode()
+    return b64, "image/jpeg"
 
 def _parse_json(content: str) -> list:
-        content = content.strip()
+    content = content.strip()
     # Strip markdown code fences
     if "```" in content:
-                for part in content.split("```"):
-                                part = part.strip().lstrip("json").strip()
-                                try:
-                                                    r = json.loads(part)
-                                                    if isinstance(r, list):
-                                                                            return r
-                                except Exception:
-                                                    continue
-                                        # Direct parse
-                                        try:
-                                                    r = json.loads(content)
-                                                    if isinstance(r, list):
-                                                                    return r
-                                except Exception:
-                                            pass
-                                        # Try between first [ and last ]
-                                        s, e = content.find("["), content.rfind("]")
-                        if s != -1 and e != -1:
-                                    try:
-                                                    r = json.loads(content[s:e + 1])
-                                                    if isinstance(r, list):
-                                                                        return r
-                                    except Exception:
-                                                    pass
-                                            # Truncated JSON
-                                            s = content.find("[")
+        for part in content.split("```"):
+            part = part.strip().lstrip("json").strip()
+            try:
+                r = json.loads(part)
+                if isinstance(r, list):
+                    return r
+            except Exception:
+                continue
+    # Direct parse
+    try:
+        r = json.loads(content)
+        if isinstance(r, list):
+            return r
+    except Exception:
+        pass
+    # Try between first [ and last ]
+    s, e = content.find("["), content.rfind("]")
+    if s != -1 and e != -1:
+        try:
+            r = json.loads(content[s:e + 1])
+            if isinstance(r, list):
+                return r
+        except Exception:
+            pass
+    # Truncated JSON
+    s = content.find("[")
     if s != -1:
-                last_close = content.rfind("}")
+        last_close = content.rfind("}")
         if last_close != -1:
-                        try:
-                                            r = json.loads(content[s:last_close + 1] + "]")
-                                            if isinstance(r, list):
-                                                                    return r
-                        except Exception:
+            try:
+                r = json.loads(content[s:last_close + 1] + "]")
+                if isinstance(r, list):
+                    return r
+            except Exception:
                 pass
     return []
 
@@ -104,84 +103,82 @@ _CCT_RE = re.compile(r"^(\d{3,4}[Kk])\s+(.+)$")
 
 
 def _clean_products(products: list) -> list:
-        """Strip CCT values that the AI accidentally puts inside codes."""
+    """Strip CCT values that the AI accidentally puts inside codes."""
     cleaned = []
     for p in products:
-                p = dict(p)
+        p = dict(p)
         new_codes = []
         found_cct = p.get("cct", "")
         for code in p.get("codes", []):
-                        m = _CCT_RE.match(str(code).strip())
+            m = _CCT_RE.match(str(code).strip())
             if m:
-                                if not found_cct:
-                                                        found_cct = m.group(1)
-                                                    new_codes.append(m.group(2).strip())
-else:
+                if not found_cct:
+                    found_cct = m.group(1)
+                new_codes.append(m.group(2).strip())
+            else:
                 new_codes.append(code)
         if new_codes:
-                        p["codes"] = new_codes
+            p["codes"] = new_codes
         if found_cct:
-                        p["cct"] = found_cct
+            p["cct"] = found_cct
         cleaned.append(p)
     return cleaned
 
-
 def _call(api_key: str, model: str, image: Image.Image, prompt: str) -> tuple:
-        """Returns (response_text, error_string). Retries on 429 with backoff."""
+    """Returns (response_text, error_string). Retries on 429 with backoff."""
     img_b64, mime = image_to_base64(image)
 
     headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
     }
 
     payload = {
-                "model": model,
-                "messages": [{
-                                "role": "user",
-                                "content": [
-                                                    {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{img_b64}"}},
-                                                    {"type": "text", "text": prompt},
-                                ],
-                }],
-                "max_tokens": 2048,
-                "temperature": 0.1,
-                "stream": False,
+        "model": model,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{img_b64}"}},
+                {"type": "text", "text": prompt},
+            ],
+        }],
+        "max_tokens": 2048,
+        "temperature": 0.1,
+        "stream": False,
     }
 
     for attempt in range(4):
-                try:
-                                resp = requests.post(API_URL, json=payload, headers=headers, timeout=90)
-                                if resp.status_code == 200:
-                                                    data = resp.json()
-                                                    text = data["choices"][0]["message"]["content"]
-                                                    return text, ""
-                                                if resp.status_code == 429:
-                                                                    wait = 15 * (attempt + 1)
-                                                                    time.sleep(wait)
-                                                                    continue
-                                                                return "", f"HTTP {resp.status_code}: {resp.text[:300]}"
-except Exception as ex:
-                return "", str(ex)
+        try:
+            resp = requests.post(API_URL, json=payload, headers=headers, timeout=90)
+            if resp.status_code == 200:
+                data = resp.json()
+                text = data["choices"][0]["message"]["content"]
+                return text, ""
+            if resp.status_code == 429:
+                wait = 15 * (attempt + 1)
+                time.sleep(wait)
+                continue
+            return "", f"HTTP {resp.status_code}: {resp.text[:300]}"
+        except Exception as ex:
+            return "", str(ex)
 
     return "", "Rate limited after retries"
 
 
 def _call_best(api_key: str, image: Image.Image, prompt: str) -> tuple:
-        """Try model candidates, return (text, error, model_used)."""
-        if _working_model["model"]:
-                    text, err = _call(api_key, _working_model["model"], image, prompt)
-                    if not err:
-                                    return text, "", _working_model["model"]
+    """Try model candidates, return (text, error, model_used)."""
+    if _working_model["model"]:
+        text, err = _call(api_key, _working_model["model"], image, prompt)
+        if not err:
+            return text, "", _working_model["model"]
 
-                for model in CANDIDATES:
-                            text, err = _call(api_key, model, image, prompt)
-                            if not err:
-                                            _working_model["model"] = model
-                                            return text, "", model
+    for model in CANDIDATES:
+        text, err = _call(api_key, model, image, prompt)
+        if not err:
+            _working_model["model"] = model
+            return text, "", model
 
-                        return "", f"All models failed. Last error: {err}", ""
-
+    return "", f"All models failed. Last error: {err}", ""
 
 PROMPT = """You are reading a portion of a lighting product catalog or price list.
 
@@ -228,9 +225,8 @@ Fields to include (only when value exists):
 
 Return ONLY a valid JSON array. No explanation. No markdown. Include EVERY code row."""
 
-
 def _split_image(image: Image.Image):
-        """Split a page into 4 sections with overlap so no row gets cut off."""
+    """Split a page into 4 sections with overlap so no row gets cut off."""
     w, h = image.size
     overlap = int(h * 0.08)
     q = h // 4
@@ -242,38 +238,38 @@ def _split_image(image: Image.Image):
 
 
 def _extract_section(api_key: str, section_image: Image.Image) -> list:
-        text, error, _ = _call_best(api_key, section_image, PROMPT)
+    text, error, _ = _call_best(api_key, section_image, PROMPT)
     if error:
-                return []
-            return _clean_products(_parse_json(text))
+        return []
+    return _clean_products(_parse_json(text))
 
 
 def _dedup(products: list) -> list:
-        seen = set()
+    seen = set()
     result = []
     for p in products:
-                key = str(p.get("codes", ""))
-                if key not in seen:
-                                seen.add(key)
-                                result.append(p)
-                        return result
+        key = str(p.get("codes", ""))
+        if key not in seen:
+            seen.add(key)
+            result.append(p)
+    return result
 
 
 def extract_products_from_page(api_key: str, page_image: Image.Image, page_num: int) -> list:
-        """
-            Extract all products from a page.
-                Splits into 4 sections; waits 3s between calls.
-                    """
+    """
+    Extract all products from a page.
+    Splits into 4 sections; waits 3s between calls.
+    """
     s1, s2, s3, s4 = _split_image(page_image)
     results = []
     for section in (s1, s2, s3, s4):
-                results.extend(_extract_section(api_key, section))
+        results.extend(_extract_section(api_key, section))
         time.sleep(3)
     return _dedup(results)
 
 
 def extract_products_debug(api_key: str, page_image: Image.Image) -> dict:
-        """Debug version — shows raw responses from all 4 sections."""
+    """Debug version — shows raw responses from all 4 sections."""
     s1, s2, s3, s4 = _split_image(page_image)
 
     t1, e1, m1 = _call_best(api_key, s1, PROMPT)
@@ -292,22 +288,21 @@ def extract_products_debug(api_key: str, page_image: Image.Image) -> dict:
     all_products = _dedup(p1 + p2 + p3 + p4)
 
     raw = (
-                f"=== SECTION 1 ({len(p1)} products) ===\n{t1}\n\n"
-                f"=== SECTION 2 ({len(p2)} products) ===\n{t2}\n\n"
-                f"=== SECTION 3 ({len(p3)} products) ===\n{t3}\n\n"
-                f"=== SECTION 4 ({len(p4)} products) ===\n{t4}"
+        f"=== SECTION 1 ({len(p1)} products) ===\n{t1}\n\n"
+        f"=== SECTION 2 ({len(p2)} products) ===\n{t2}\n\n"
+        f"=== SECTION 3 ({len(p3)} products) ===\n{t3}\n\n"
+        f"=== SECTION 4 ({len(p4)} products) ===\n{t4}"
     )
 
     return {
-                "model": m1 or "unknown",
-                "raw_response": raw,
-                "parsed": all_products,
-                "error": e1 or e2 or e3 or e4,
+        "model": m1 or "unknown",
+        "raw_response": raw,
+        "parsed": all_products,
+        "error": e1 or e2 or e3 or e4,
     }
 
-
 def describe_image(api_key: str, image: Image.Image) -> str:
-        prompt = "Describe this lighting product briefly: type, shape, color, style, any visible codes."
+    prompt = "Describe this lighting product briefly: type, shape, color, style, any visible codes."
     text, _, _ = _call_best(api_key, image, prompt)
     return text
 
@@ -340,25 +335,25 @@ Rules:
 
 
 def find_dim_boxes(api_key: str, page_image: Image.Image) -> list:
-        """
-            Ask the vision AI to locate dimension drawing bounding boxes on a catalog page.
-                Returns a list of dicts: [{"x0": %, "y0": %, "x1": %, "y1": %}, ...]
-                    Percentages are 0-100 relative to the full image size.
-                        Returns [] on failure.
-                            """
+    """
+    Ask the vision AI to locate dimension drawing bounding boxes on a catalog page.
+    Returns a list of dicts: [{"x0": %, "y0": %, "x1": %, "y1": %}, ...]
+    Percentages are 0-100 relative to the full image size.
+    Returns [] on failure.
+    """
     text, err, _ = _call_best(api_key, page_image, DIM_BOX_PROMPT)
     if err or not text:
-                return []
+        return []
 
     boxes = _parse_json(text)
     # Validate: each entry must have x0,y0,x1,y1 all as numbers in 0-100
     valid = []
     for b in boxes:
-                try:
-                                x0, y0, x1, y1 = float(b["x0"]), float(b["y0"]), float(b["x1"]), float(b["y1"])
-                                if 0 <= x0 < x1 <= 100 and 0 <= y0 < y1 <= 100:
-                                                    valid.append({"x0": x0, "y0": y0, "x1": x1, "y1": y1})
-    except (KeyError, TypeError, ValueError):
+        try:
+            x0, y0, x1, y1 = float(b["x0"]), float(b["y0"]), float(b["x1"]), float(b["y1"])
+            if 0 <= x0 < x1 <= 100 and 0 <= y0 < y1 <= 100:
+                valid.append({"x0": x0, "y0": y0, "x1": x1, "y1": y1})
+        except (KeyError, TypeError, ValueError):
             continue
 
     return valid
