@@ -241,6 +241,64 @@ def _find_drawing_rects(page) -> list:
     return rect_pool[:2]
 
 
+
+def _extend_crop_to_content(full, x0, y0, x1, y1, px_w, px_h):
+    """
+    Extend a detected rectangle's crop boundaries upward to capture the full
+    lamp drawing including ceiling mounts and stems that extend above the
+    bordered box in the PDF.
+
+    The PDF's bordered rectangle often only encloses the lower portion of the
+    lamp drawing (the shade/body + dimension labels). The ceiling mount plate
+    and the hanging stem extend above that box. This function scans the
+    rendered page image upward from the rect's top edge to find where the
+    drawing content actually starts.
+
+    Returns (new_x0, new_y0, new_x1, new_y1).
+    """
+    import numpy as np
+    arr = np.array(full)
+
+    # Use the horizontal range of the rect (with some margin)
+    margin_x = int((x1 - x0) * 0.1)
+    scan_x0 = max(0, x0 - margin_x)
+    scan_x1 = min(px_w, x1 + margin_x)
+
+    # Scan upward from y0, looking for rows with dark pixels (drawn content)
+    new_y0 = y0
+    # Maximum upward extension: go up to 80% of the rect's own height above it
+    max_extend = int((y1 - y0) * 0.8)
+    scan_top = max(0, y0 - max_extend)
+
+    for scan_y in range(y0 - 1, scan_top - 1, -1):
+        row_strip = arr[scan_y, scan_x0:scan_x1, :]
+        dark_pixels = (row_strip < 200).any(axis=1)
+        dark_fraction = dark_pixels.mean()
+        if dark_fraction > 0.005:
+            new_y0 = scan_y
+        else:
+            # Bridge small gaps (e.g. between stem and ceiling mount)
+            found_more = False
+            for ahead in range(1, min(26, scan_y - scan_top + 1)):
+                ahead_row = arr[scan_y - ahead, scan_x0:scan_x1, :]
+                ahead_dark = (ahead_row < 200).any(axis=1).mean()
+                if ahead_dark > 0.005:
+                    found_more = True
+                    break
+            if not found_more:
+                break
+
+    # Add padding around the final crop
+    pad = 10
+    new_y0 = max(0, new_y0 - pad)
+    new_x0 = max(0, x0 - pad)
+    new_x1 = min(px_w, x1 + pad)
+    new_y1 = min(px_h, y1 + pad)
+
+    return new_x0, new_y0, new_x1, new_y1
+
+
+
 def extract_page_images(pdf_bytes: bytes, page_num: int, api_key: str = None) -> dict:
     """
     Extract dimension drawings from one PDF page for the 尺寸 column.
@@ -293,14 +351,21 @@ def extract_page_images(pdf_bytes: bytes, page_num: int, api_key: str = None) ->
     sy = px_h / page_h
 
     if rects:
-        pad = 8   # small breathing room around the exact box border
         dim_imgs = []
         for r in rects:
-            x0 = max(0,    int(r.x0 * sx) - pad)
-            y0 = max(0,    int(r.y0 * sy) - pad)
-            x1 = min(px_w, int(r.x1 * sx) + pad)
-            y1 = min(px_h, int(r.y1 * sy) + pad)
-            crop = full.crop((x0, y0, x1, y1))
+            # Convert PDF coords to pixel coords
+            rx0 = int(r.x0 * sx)
+            ry0 = int(r.y0 * sy)
+            rx1 = int(r.x1 * sx)
+            ry1 = int(r.y1 * sy)
+
+            # Extend the crop upward to capture ceiling mounts and stems
+            # that extend above the bordered rectangle in the PDF
+            ex0, ey0, ex1, ey1 = _extend_crop_to_content(
+                full, rx0, ry0, rx1, ry1, px_w, px_h
+            )
+
+            crop = full.crop((ex0, ey0, ex1, ey1))
             if crop.width > 40 and crop.height > 40:
                 dim_imgs.append(crop)
         if dim_imgs:
