@@ -13,6 +13,7 @@ import requests
 from PIL import Image
 import streamlit as st
 
+
 API_URL = "https://api.moonshot.cn/v1/chat/completions"
 
 # Moonshot vision model
@@ -36,8 +37,7 @@ def get_client():
 
 
 def image_to_base64(image: Image.Image) -> tuple:
-    """Returns (base64_string, mime_type).
-    Resizes and compresses to JPEG.
+    """Returns (base64_string, mime_type).  Resizes and compresses to JPEG.
     Keep max side at 1024px, quality 75.
     """
     img = image.convert("RGB")
@@ -56,6 +56,7 @@ def image_to_base64(image: Image.Image) -> tuple:
         img.save(buf2, format="JPEG", quality=50)
         b64 = base64.b64encode(buf2.getvalue()).decode()
     return b64, "image/jpeg"
+
 
 def _parse_json(content: str) -> list:
     content = content.strip()
@@ -124,15 +125,14 @@ def _clean_products(products: list) -> list:
         cleaned.append(p)
     return cleaned
 
-def _call(api_key: str, model: str, image: Image.Image, prompt: str) -> tuple:
-    """Returns (response_text, error_string). Retries on 429 with backoff."""
-    img_b64, mime = image_to_base64(image)
 
+def _call(api_key: str, model: str, image: Image.Image, prompt: str) -> tuple:
+    """Returns (response_text, error_string).  Retries on 429 with backoff."""
+    img_b64, mime = image_to_base64(image)
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-
     payload = {
         "model": model,
         "messages": [{
@@ -146,7 +146,6 @@ def _call(api_key: str, model: str, image: Image.Image, prompt: str) -> tuple:
         "temperature": 0.1,
         "stream": False,
     }
-
     for attempt in range(4):
         try:
             resp = requests.post(API_URL, json=payload, headers=headers, timeout=90)
@@ -161,7 +160,6 @@ def _call(api_key: str, model: str, image: Image.Image, prompt: str) -> tuple:
             return "", f"HTTP {resp.status_code}: {resp.text[:300]}"
         except Exception as ex:
             return "", str(ex)
-
     return "", "Rate limited after retries"
 
 
@@ -171,14 +169,13 @@ def _call_best(api_key: str, image: Image.Image, prompt: str) -> tuple:
         text, err = _call(api_key, _working_model["model"], image, prompt)
         if not err:
             return text, "", _working_model["model"]
-
     for model in CANDIDATES:
         text, err = _call(api_key, model, image, prompt)
         if not err:
             _working_model["model"] = model
             return text, "", model
-
     return "", f"All models failed. Last error: {err}", ""
+
 
 PROMPT = """You are reading a portion of a lighting product catalog or price list.
 
@@ -200,6 +197,11 @@ CRITICAL NAME RULE:
 - NEVER leave name as null or "?" — always put something
 - For accessories, use the full accessory description as the name
 
+IMPORTANT — AVOID DUPLICATES:
+- This image is ONE SECTION of a full page. Some rows near the very top or bottom edges may be partially visible (cut off).
+- Do NOT extract a row if its code text is clearly cut off or only partially visible at the edge.
+- Only extract rows where you can fully read the product code.
+
 RULES:
 - One JSON object per code/row
 - Prices are plain numbers (e.g. 3120.00) — convert comma decimals: 3120,00 → 3120.00
@@ -207,11 +209,11 @@ RULES:
 - OMIT any field that has no value — do NOT write null, just skip the key entirely
 - Keep field values short and factual
 - If no product codes visible (cover, index, pure text page), return []
-- CCT RULE: Values like "2700K", "3000K", "4000K" are color temperatures shown in a CCT column — put them in the `cct` field ONLY, NEVER include them in the `codes` array. Codes are alphanumeric article numbers like "21019/DIM/AR" — they never start with a temperature value
+- CCT RULE: Values like "2700K", "3000K", "4000K" are color temperatures shown in a CCT column — put them in the \`cct\` field ONLY, NEVER include them in the \`codes\` array.  Codes are alphanumeric article numbers like "21019/DIM/AR" — they never start with a temperature value
 - If a CCT value (e.g. 2700K) appears next to multiple codes in the same group, apply that cct value to all those codes
 
 Fields to include (only when value exists):
-- codes: ["CODE"] — required
+- codes: ["CODE"]  — required
 - name: FULL product family name (e.g. "AVRO Studio Natural", "SPIDER LED 40") — ALWAYS required, use every word, never "?"
 - color: color name (e.g. "Arancio", "Bianco")
 - light_source: e.g. "7.5W 1110lm Integrated LED"
@@ -225,16 +227,26 @@ Fields to include (only when value exists):
 
 Return ONLY a valid JSON array. No explanation. No markdown. Include EVERY code row."""
 
+
 def _split_image(image: Image.Image):
-    """Split a page into 4 sections with overlap so no row gets cut off."""
+    """Split a page into 2 halves (top/bottom) with a small overlap.
+
+    Catalog pages typically have 1–2 product families stacked vertically.
+    Using 2 sections instead of 4 greatly reduces the chance of the same
+    product rows appearing in multiple sections and being extracted twice.
+    """
     w, h = image.size
-    overlap = int(h * 0.08)
-    q = h // 4
-    s1 = image.crop((0, 0, w, q + overlap))
-    s2 = image.crop((0, q - overlap, w, q * 2 + overlap))
-    s3 = image.crop((0, q * 2 - overlap, w, q * 3 + overlap))
-    s4 = image.crop((0, q * 3 - overlap, w, h))
-    return s1, s2, s3, s4
+    overlap = int(h * 0.06)  # 6 % overlap to avoid cutting rows at the boundary
+    mid = h // 2
+    s1 = image.crop((0, 0, w, mid + overlap))
+    s2 = image.crop((0, mid - overlap, w, h))
+    return s1, s2
+
+
+def _normalize_code(code: str) -> str:
+    """Normalize a product code for comparison: uppercase, strip whitespace,
+    remove common separators."""
+    return re.sub(r"[\s/\-_]+", "", str(code).strip().upper())
 
 
 def _extract_section(api_key: str, section_image: Image.Image) -> list:
@@ -245,61 +257,79 @@ def _extract_section(api_key: str, section_image: Image.Image) -> list:
 
 
 def _dedup(products: list) -> list:
-    seen = set()
+    """De-duplicate products using normalized code matching.
+
+    Two products are considered duplicates if any of their codes match after
+    normalization (uppercased, separators stripped).  When duplicates are found,
+    the entry with MORE fields filled in is kept.
+    """
     result = []
+    seen_codes = set()
+
     for p in products:
-        key = str(p.get("codes", ""))
-        if key not in seen:
-            seen.add(key)
-            result.append(p)
+        codes = p.get("codes", [])
+        norm_codes = [_normalize_code(c) for c in codes]
+
+        # Check if ANY of this product's codes were already seen
+        if any(nc in seen_codes for nc in norm_codes):
+            # Duplicate — check if this version has more info
+            for i, existing in enumerate(result):
+                ex_codes = [_normalize_code(c) for c in existing.get("codes", [])]
+                if any(nc in ex_codes for nc in norm_codes):
+                    # Keep whichever has more non-empty fields
+                    new_fields = sum(1 for v in p.values() if v)
+                    old_fields = sum(1 for v in existing.values() if v)
+                    if new_fields > old_fields:
+                        result[i] = p
+                    break
+            continue
+
+        seen_codes.update(norm_codes)
+        result.append(p)
+
     return result
 
 
 def extract_products_from_page(api_key: str, page_image: Image.Image, page_num: int) -> list:
+    """Extract all products from a page.
+
+    Splits into 2 halves (top / bottom); waits 3 s between calls to avoid
+    rate limiting.  Uses fuzzy dedup to remove products extracted from the
+    overlap zone.
     """
-    Extract all products from a page.
-    Splits into 4 sections; waits 3s between calls.
-    """
-    s1, s2, s3, s4 = _split_image(page_image)
+    s1, s2 = _split_image(page_image)
     results = []
-    for section in (s1, s2, s3, s4):
+    for section in (s1, s2):
         results.extend(_extract_section(api_key, section))
         time.sleep(3)
     return _dedup(results)
 
 
 def extract_products_debug(api_key: str, page_image: Image.Image) -> dict:
-    """Debug version — shows raw responses from all 4 sections."""
-    s1, s2, s3, s4 = _split_image(page_image)
+    """Debug version — shows raw responses from both sections."""
+    s1, s2 = _split_image(page_image)
 
     t1, e1, m1 = _call_best(api_key, s1, PROMPT)
     time.sleep(3)
     t2, e2, _ = _call_best(api_key, s2, PROMPT)
-    time.sleep(3)
-    t3, e3, _ = _call_best(api_key, s3, PROMPT)
-    time.sleep(3)
-    t4, e4, _ = _call_best(api_key, s4, PROMPT)
 
     p1 = _clean_products(_parse_json(t1)) if t1 else []
     p2 = _clean_products(_parse_json(t2)) if t2 else []
-    p3 = _clean_products(_parse_json(t3)) if t3 else []
-    p4 = _clean_products(_parse_json(t4)) if t4 else []
 
-    all_products = _dedup(p1 + p2 + p3 + p4)
+    all_products = _dedup(p1 + p2)
 
     raw = (
         f"=== SECTION 1 ({len(p1)} products) ===\n{t1}\n\n"
-        f"=== SECTION 2 ({len(p2)} products) ===\n{t2}\n\n"
-        f"=== SECTION 3 ({len(p3)} products) ===\n{t3}\n\n"
-        f"=== SECTION 4 ({len(p4)} products) ===\n{t4}"
+        f"=== SECTION 2 ({len(p2)} products) ===\n{t2}"
     )
 
     return {
         "model": m1 or "unknown",
         "raw_response": raw,
         "parsed": all_products,
-        "error": e1 or e2 or e3 or e4,
+        "error": e1 or e2,
     }
+
 
 def describe_image(api_key: str, image: Image.Image) -> str:
     prompt = "Describe this lighting product briefly: type, shape, color, style, any visible codes."
@@ -309,17 +339,14 @@ def describe_image(api_key: str, image: Image.Image) -> str:
 
 DIM_BOX_PROMPT = """This is a page from a lighting product catalog.
 
-Find every DIMENSION DRAWING on this page.
+Find every DIMENSION DRAWING on this page.  A dimension drawing is a technical
+outline/silhouette of a lamp or light fixture (pendant, wall lamp, floor lamp,
+etc.) that has measurement annotations around it — numbers like Ø60, Ø35, H25,
+W40, etc.  These drawings are always inside a clearly bordered rectangular box,
+located on the LEFT side of each product section.
 
-A dimension drawing is a technical outline/silhouette of a lamp or light fixture
-(pendant, wall lamp, floor lamp, etc.) that has measurement annotations around it
-— numbers like Ø60, Ø35, H25, W40, etc.
-
-These drawings are always inside a clearly bordered rectangular box, located on the
-LEFT side of each product section.
-
-For each dimension drawing box, return its bounding box as percentages of the full
-image width and height.
+For each dimension drawing box, return its bounding box as percentages of the
+full image width and height.
 
 Return ONLY a JSON array, nothing else:
 [{"x0": 5, "y0": 8, "x1": 35, "y1": 50}, {"x0": 5, "y0": 53, "x1": 35, "y1": 97}]
@@ -331,7 +358,8 @@ Rules:
 - Do NOT include product name text, spec tables, "Light source", "Type", "Volt" text, or any accessory lists
 - Crop tightly to the drawing box border
 - If no dimension drawings exist on this page, return []
-- Sort top to bottom"""
+- Sort top to bottom
+- Return ALL drawings found, not just the first two"""
 
 
 def find_dim_boxes(api_key: str, page_image: Image.Image) -> list:
@@ -344,7 +372,6 @@ def find_dim_boxes(api_key: str, page_image: Image.Image) -> list:
     text, err, _ = _call_best(api_key, page_image, DIM_BOX_PROMPT)
     if err or not text:
         return []
-
     boxes = _parse_json(text)
     # Validate: each entry must have x0,y0,x1,y1 all as numbers in 0-100
     valid = []
@@ -355,5 +382,4 @@ def find_dim_boxes(api_key: str, page_image: Image.Image) -> list:
                 valid.append({"x0": x0, "y0": y0, "x1": x1, "y1": y1})
         except (KeyError, TypeError, ValueError):
             continue
-
     return valid
