@@ -219,6 +219,7 @@ Fields to include (only when value exists):
 - currency: e.g. "RMB" — required if visible
 - description: short description, mounting type, or accessory use
 - extra_fields: object with any of {ip_rating, dimming, voltage, driver, structure, diffuser, net_weight}
+- is_accessory: true — include ONLY for rows under an "Accessories" / "Accessori" section header; omit this field entirely for main product rows
 Return ONLY a valid JSON array. No explanation. No markdown. Include EVERY unique code row."""
 
 PROMPT_SECTION = """You are reading a portion of a lighting product catalog or price list.
@@ -267,6 +268,7 @@ Fields to include (only when value exists):
 - currency: e.g. "RMB" — required if visible
 - description: short description, mounting type, or accessory use
 - extra_fields: object with any of {ip_rating, dimming, voltage, driver, structure, diffuser, net_weight}
+- is_accessory: true — include ONLY for rows under an "Accessories" / "Accessori" section header; omit this field entirely for main product rows
 Return ONLY a valid JSON array. No explanation. No markdown. Include EVERY code row."""
 
 
