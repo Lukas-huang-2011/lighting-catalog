@@ -126,32 +126,32 @@ def _rect_from_path_items(items, pw, ph) -> "fitz.Rect | None":
                                      -> items like [("l",p1,p2),("l",p2,p3),("l",p3,p4),("l",p4,p1)]
                                          Returns a fitz.Rect or None.
                                              """
-    if not items:
+        if not items:
                 return None
 
-    # Case A: explicit rectangle command (most PDF creators use this)
-    if items[0][0] == "re":
+        # Case A: explicit rectangle command (most PDF creators use this)
+        if items[0][0] == "re":
                 return fitz.Rect(items[0][1])
 
-    # Case B: 4-5 line/moveto segments that together form a closed rectangle
-    if not (4 <= len(items) <= 5):
+        # Case B: 4-5 line/moveto segments that together form a closed rectangle
+        if not (4 <= len(items) <= 5):
                 return None
-    pts = []
-    for item in items:
+        pts = []
+        for item in items:
                 t = item[0]
         if t == "l" and len(item) >= 3:
                         pts.append(item[1])  # start-point of the line
             pts.append(item[2])  # end-point of the line
 elif t == "m" and len(item) >= 2:
             pts.append(item[1])
-    if len(pts) < 4:
+        if len(pts) < 4:
                 return None
-    xs = sorted({round(p.x) for p in pts})
-    ys = sorted({round(p.y) for p in pts})
-    # A rectangle has exactly 2 distinct x values and 2 distinct y values
-    if len(xs) != 2 or len(ys) != 2:
+        xs = sorted({round(p.x) for p in pts})
+        ys = sorted({round(p.y) for p in pts})
+        # A rectangle has exactly 2 distinct x values and 2 distinct y values
+        if len(xs) != 2 or len(ys) != 2:
                 return None
-    return fitz.Rect(xs[0], ys[0], xs[1], ys[1])
+        return fitz.Rect(xs[0], ys[0], xs[1], ys[1])
 
 
 def _find_drawing_rects(page) -> list:
@@ -175,12 +175,12 @@ def _find_drawing_rects(page) -> list:
 
                                                                              Returns up to 2 fitz.Rect objects sorted top -> bottom.
                                                                                  """
-    pw = page.rect.width
-    ph = page.rect.height
+        pw = page.rect.width
+        ph = page.rect.height
 
-    # -- 1. Find diameter label positions ----
-    label_pts = []
-    for block in page.get_text("dict").get("blocks", []):
+        # -- 1. Find diameter label positions ----
+        label_pts = []
+        for block in page.get_text("dict").get("blocks", []):
                 for line in block.get("lines", []):
                                 for span in line.get("spans", []):
                                                     txt = span.get("text", "")
@@ -190,7 +190,7 @@ def _find_drawing_rects(page) -> list:
 
                                         # -- 2. Collect rectangle-shaped border strokes in the LEFT zone ----
                                         rect_pool = []
-    for path in page.get_drawings():
+        for path in page.get_drawings():
                 items = path.get("items", [])
         r = _rect_from_path_items(items, pw, ph)
         if r is None or r.is_empty or r.is_infinite:
@@ -204,11 +204,11 @@ def _find_drawing_rects(page) -> list:
                         continue
         rect_pool.append(r)
 
-    if not rect_pool:
+        if not rect_pool:
                 return []
 
-    # -- 3. Anchor on diameter labels -> find smallest containing rect ----
-    if label_pts:
+        # -- 3. Anchor on diameter labels -> find smallest containing rect ----
+        if label_pts:
                 found, seen = [], set()
         for px, py in label_pts:
                         containing = [
@@ -226,9 +226,9 @@ def _find_drawing_rects(page) -> list:
                         found.sort(key=lambda r: r.y0)
             return found[:2]
 
-    # -- 4. Fallback: return all qualifying left-zone rects sorted by Y ----
-    rect_pool.sort(key=lambda r: r.y0)
-    return rect_pool[:2]
+        # -- 4. Fallback: return all qualifying left-zone rects sorted by Y ----
+        rect_pool.sort(key=lambda r: r.y0)
+        return rect_pool[:2]
 
 
 def _extend_crop_to_content(full, x0, y0, x1, y1, px_w, px_h):
