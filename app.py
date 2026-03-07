@@ -441,20 +441,20 @@ elif page == "🛠️ Debug & Test":
 
     st.divider()
     st.subheader("2. Test AI connection")
-    if st.button("🔍 Test Moonshot AI connection"):
+    if st.button("🔍 Test Zhipu AI connection"):
         import requests as req
-        api_key = st.secrets.get("MOONSHOT_API_KEY", "")
+        api_key = st.secrets.get("ZHIPU_API_KEY", "")
         if not api_key:
-            st.error("MOONSHOT_API_KEY not set in Streamlit secrets.")
+            st.error("ZHIPU_API_KEY not set in Streamlit secrets.")
         else:
             r = req.post(
-                "https://api.moonshot.cn/v1/chat/completions",
+                "https://open.bigmodel.cn/api/paas/v4/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={"model": "moonshot-v1-8k-vision-preview", "messages": [{"role": "user", "content": "Hi"}], "max_tokens": 10},
+                json={"model": "glm-4v-flash", "messages": [{"role": "user", "content": "Hi"}], "max_tokens": 10},
                 timeout=15
             )
             if r.status_code == 200:
-                st.success("✅ Moonshot AI connection works! Model: moonshot-v1-8k-vision-preview (free)")
+                st.success("✅ Zhipu AI connection works! Model: glm-4v-flash (free)")
             else:
                 st.error(f"❌ {r.status_code}: {r.text[:300]}")
 
@@ -477,7 +477,7 @@ elif page == "🛠️ Debug & Test":
         # ── 3. AI product extraction ───────────────────────────────────────────
         if st.button("🤖 Run AI product extraction"):
             ai_client = ai.get_client()
-            with st.spinner("Sending to Moonshot AI — takes ~15 s…"):
+            with st.spinner("Sending to Zhipu AI — takes ~15 s…"):
                 debug_result = ai.extract_products_debug(ai_client, page_img)
             if debug_result.get("error"):
                 st.error(f"❌ Error: {debug_result['error']}")
@@ -505,7 +505,7 @@ elif page == "🛠️ Debug & Test":
         )
 
         if st.button("🖼️ Extract 尺寸 drawings from this page"):
-            _api_key = st.secrets.get("MOONSHOT_API_KEY", "") or None
+            _api_key = st.secrets.get("ZHIPU_API_KEY", "") or None
             with st.spinner("Asking AI to locate dimension drawings…"):
                 result = pdf.extract_page_images(pdf_bytes, page_num, api_key=_api_key)
             dim_imgs = result["dim"]
