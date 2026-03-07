@@ -697,10 +697,14 @@ elif page == "🛠️ Debug & Test":
                     if pp["custom_pil"] is not None:
                         xl_prod_imgs[i] = pp["custom_pil"]
 
-                    # 尺寸 dim image: fully automatic — product i → dim drawing i
-                    if dim_images_for_xl:
-                        auto_dim_idx = min(i, len(dim_images_for_xl) - 1)
-                        xl_dim_imgs[i] = dim_images_for_xl[auto_dim_idx]
+                    # 尺寸 dim image: match by product_index (not list position).
+                    # Accessories never get a dimension drawing.
+                    if dim_images_for_xl and not prod.get("is_accessory"):
+                        pidx = prod.get("product_index", 0)
+                        if pidx < len(dim_images_for_xl):
+                            xl_dim_imgs[i] = dim_images_for_xl[pidx]
+                        else:
+                            xl_dim_imgs[i] = dim_images_for_xl[-1]
 
                 xl_bytes = xl.build_excel_from_template(
                     xl_products,
