@@ -18,15 +18,128 @@ import ai_extractor as ai
 import image_search as imgs
 import excel_export as xl
 
-st.set_page_config(page_title="Lighting Catalog", page_icon="💡", layout="wide")
+st.set_page_config(page_title="柔点 · 灯具目录", page_icon="💡", layout="wide")
 
 st.markdown("""
 <style>
-  .block-container { padding-top: 1.5rem; }
-  .stButton>button { border-radius: 8px; }
-  .product-card { border:1px solid #e0e0e0; border-radius:12px; padding:16px; margin-bottom:12px; background:#fafafa; }
-  .badge { display:inline-block; background:#1F3864; color:white; border-radius:6px; padding:2px 8px; font-size:0.8em; margin:2px; }
-  .brand-tag { display:inline-block; background:#e8f4ea; color:#2d6a35; border-radius:6px; padding:2px 8px; font-size:0.8em; margin:2px; font-weight:600; }
+/* ── Base ──────────────────────────────────────────────────────── */
+html, body, .stApp,
+[data-testid="stAppViewContainer"],
+[data-testid="stMain"] { background-color: #0a0a0a !important; }
+[data-testid="stHeader"] { background-color: #0a0a0a !important; border-bottom: 1px solid #1c1c1c; }
+[data-testid="stSidebar"],
+section[data-testid="stSidebarContent"] { background-color: #0e0e0e !important; border-right: 1px solid #1c1c1c !important; }
+.block-container { padding-top: 1.5rem; }
+
+/* ── Typography ────────────────────────────────────────────────── */
+body, p, span, div, label, .stMarkdown { color: #dcdcdc; }
+h1, h2, h3, h4 { color: #ffffff !important; }
+[data-testid="stSidebar"] * { color: #cccccc !important; }
+.stCaption p, small { color: #666 !important; }
+
+/* ── Inputs ────────────────────────────────────────────────────── */
+.stTextInput > div > div > input,
+.stNumberInput > div > div > input,
+.stTextArea > div > div > textarea {
+  background-color: #141414 !important;
+  color: #f0f0f0 !important;
+  border: 1px solid #2c2c2c !important;
+  border-radius: 6px !important;
+}
+
+/* ── Buttons ───────────────────────────────────────────────────── */
+.stButton > button {
+  background-color: #1a1a1a !important;
+  color: #dedede !important;
+  border: 1px solid #333 !important;
+  border-radius: 8px !important;
+  transition: all 0.18s ease !important;
+}
+.stButton > button:hover {
+  background-color: #242424 !important;
+  border-color: #666 !important;
+  color: #fff !important;
+}
+.stButton > button[kind="primary"] {
+  background-color: #efefef !important;
+  color: #0a0a0a !important;
+  border: none !important;
+  font-weight: 700 !important;
+}
+.stButton > button[kind="primary"]:hover { background-color: #ffffff !important; }
+
+/* ── Cards ─────────────────────────────────────────────────────── */
+.product-card {
+  border: 1px solid #1e1e1e !important;
+  border-radius: 12px !important;
+  padding: 16px !important;
+  margin-bottom: 12px !important;
+  background: #101010 !important;
+}
+.badge {
+  display:inline-block; background:#e8e8e8; color:#0a0a0a;
+  border-radius:6px; padding:2px 8px; font-size:0.8em; margin:2px; font-weight:600;
+}
+.brand-tag {
+  display:inline-block; background:#162016; color:#72c472;
+  border-radius:6px; padding:2px 8px; font-size:0.8em; margin:2px; font-weight:600;
+}
+
+/* ── Expanders ─────────────────────────────────────────────────── */
+[data-testid="stExpander"] {
+  background-color: #101010 !important;
+  border: 1px solid #1e1e1e !important;
+  border-radius: 8px !important;
+}
+[data-testid="stExpander"] summary { color: #d0d0d0 !important; }
+
+/* ── Metrics ───────────────────────────────────────────────────── */
+[data-testid="metric-container"] {
+  background: #141414; border: 1px solid #1e1e1e;
+  border-radius: 8px; padding: 10px;
+}
+[data-testid="stMetricLabel"] p { color: #777 !important; }
+[data-testid="stMetricValue"] { color: #fff !important; }
+
+/* ── Dividers / Progress ───────────────────────────────────────── */
+hr, [data-testid="stDivider"] { border-color: #1e1e1e !important; }
+.stProgress > div > div > div { background-color: #d0d0d0 !important; }
+
+/* ── File uploader ─────────────────────────────────────────────── */
+[data-testid="stFileUploader"] {
+  background-color: #101010 !important; border-color: #2a2a2a !important; border-radius: 8px !important;
+}
+
+/* ── Select / Radio ────────────────────────────────────────────── */
+.stSelectbox > div > div { background-color: #141414 !important; color: #f0f0f0 !important; border-color: #2c2c2c !important; }
+[data-testid="stRadio"] label { color: #ccc !important; }
+
+/* ── Logo animation ────────────────────────────────────────────── */
+.rd-logo {
+  display:flex; flex-direction:column; align-items:center;
+  padding:28px 0 16px; gap:14px; cursor:default; user-select:none;
+}
+.rd-icon { display:flex; align-items:center; justify-content:center; gap:5px; height:44px; }
+.rd-arc {
+  border: 3.5px solid #ffffff; border-radius: 50%;
+  animation: rd-spin 3s linear infinite;
+}
+.rd-arc.l1 { width:10px; height:16px; border-right-color:transparent; border-bottom-color:transparent; animation-duration:2.6s; }
+.rd-arc.l2 { width:15px; height:22px; border-right-color:transparent; border-bottom-color:transparent; animation-duration:3.2s; animation-delay:-0.5s; }
+.rd-dot    { width:5px; height:5px; border-radius:50%; background:#fff; animation: rd-pulse 2.4s ease-in-out infinite; }
+.rd-dot:nth-child(4) { animation-delay:0.5s; }
+.rd-circle { width:13px; height:13px; border:3.5px solid #fff; border-radius:50%; animation: rd-pulse 2.4s ease-in-out infinite; animation-delay:0.9s; }
+.rd-arc.r1 { width:10px; height:16px; border-left-color:transparent; border-top-color:transparent; animation-duration:2.6s; animation-direction:reverse; }
+.rd-arc.r2 { width:15px; height:22px; border-left-color:transparent; border-top-color:transparent; animation-duration:3.2s; animation-delay:-0.5s; animation-direction:reverse; }
+.rd-arc.r3 { width:20px; height:30px; border-left-color:transparent; border-top-color:transparent; animation-duration:4s; animation-delay:-1.1s; animation-direction:reverse; }
+.rd-name {
+  font-size:30px; font-weight:900; color:#fff; letter-spacing:8px;
+  font-family:'PingFang SC','Noto Sans SC','Microsoft YaHei',sans-serif;
+  animation: rd-glow 4s ease-in-out infinite;
+}
+@keyframes rd-spin  { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+@keyframes rd-pulse { 0%,100%{opacity:.35;transform:scale(.75)} 50%{opacity:1;transform:scale(1.25)} }
+@keyframes rd-glow  { 0%,100%{text-shadow:0 0 8px rgba(255,255,255,.15)} 50%{text-shadow:0 0 22px rgba(255,255,255,.7),0 0 48px rgba(255,255,255,.2)} }
 </style>
 """, unsafe_allow_html=True)
 
@@ -102,7 +215,21 @@ def _render_cards(products: list, show_similarity: bool = False):
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.title("💡 Lighting Catalog")
+    st.markdown("""
+    <div class="rd-logo">
+      <div class="rd-icon">
+        <div class="rd-arc l1"></div>
+        <div class="rd-arc l2"></div>
+        <div class="rd-dot"></div>
+        <div class="rd-dot"></div>
+        <div class="rd-circle"></div>
+        <div class="rd-arc r1"></div>
+        <div class="rd-arc r2"></div>
+        <div class="rd-arc r3"></div>
+      </div>
+      <div class="rd-name">柔点</div>
+    </div>
+    """, unsafe_allow_html=True)
     st.divider()
     page = st.radio("Navigation", [
         "📤 Upload & Extract",
@@ -165,32 +292,38 @@ if page == "📤 Upload & Extract":
                 products = ai.extract_products_from_page(ai_client, page_img, page_num)
                 log.caption(f"Page {page_num+1}: {len(products)} product(s) → total: {total_products + len(products)}")
 
-                # 2. Upload images ONCE per page (not once per product)
-                #    No describe_image — that wastes API quota and causes rate limiting
-                page_image_records = []  # list of (url, hash)
+                # 2. Extract product photos indexed by product_index.
+                #    AI vision locates each photo top-to-bottom so index 0 = first product, etc.
+                #    Accessories are skipped — they share product_index with their parent
+                #    but don't get their own photo.
+                page_photo_index = {}  # product_index -> (url, hash)
                 if extract_images_flag and products:
                     try:
-                        raw_images = pdf.extract_images_from_page(pdf_bytes, page_num)
-                        for pil_img in raw_images[:2]:  # max 2 images per page
+                        raw = pdf.extract_page_images(pdf_bytes, page_num, api_key=ai_client)
+                        photo_list = raw.get("product", [])
+                        for pidx, pil_img in enumerate(photo_list[:4]):
                             try:
                                 img_url = db.upload_image(client, pil_img)
                                 img_hash = imgs.compute_hash(pil_img)
-                                page_image_records.append((img_url, img_hash))
+                                page_photo_index[pidx] = (img_url, img_hash)
                             except Exception as e:
                                 errors.append(f"Image upload p{page_num+1}: {e}")
                     except Exception as e:
                         errors.append(f"Image extract p{page_num+1}: {e}")
 
-                # 3. Save each product and link the page images to it
+                # 3. Save each product and link only the photo matching its product_index
                 for prod in products:
                     try:
                         prod_id = db.save_product(client, pdf_id, prod, page_num)
                         total_products += 1
-                        for img_url, img_hash in page_image_records:
-                            try:
-                                db.save_product_image(client, prod_id, img_url, img_hash, "")
-                            except Exception as e:
-                                errors.append(f"Image link p{page_num+1}: {e}")
+                        if not prod.get("is_accessory") and page_photo_index:
+                            pidx = prod.get("product_index", 0)
+                            if pidx in page_photo_index:
+                                img_url, img_hash = page_photo_index[pidx]
+                                try:
+                                    db.save_product_image(client, prod_id, img_url, img_hash, "")
+                                except Exception as e:
+                                    errors.append(f"Image link p{page_num+1}: {e}")
                     except Exception as e:
                         errors.append(f"Save product p{page_num+1}: {e}")
 
@@ -645,9 +778,12 @@ elif page == "🛠️ Debug & Test":
                             key=f"delivery_{i}", placeholder="现货",
                         )
 
-                        # 种类: auto-detect from description THEN from product name
+                        # 种类: auto-detect from type field FIRST (most reliable),
+                        # then description, then product name as last resort
                         raw_desc = prod.get("description") or ""
-                        auto_cat = _auto_zh(raw_desc) or _auto_zh(prod.get("name", ""))
+                        auto_cat = (_auto_zh(prod.get("type", ""))
+                                    or _auto_zh(raw_desc)
+                                    or _auto_zh(prod.get("name", "")))
                         category = dc[2].text_input(
                             "种类 Category",
                             value=auto_cat or raw_desc,
