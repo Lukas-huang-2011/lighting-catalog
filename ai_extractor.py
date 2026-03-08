@@ -187,6 +187,7 @@ CRITICAL NAME RULE:
 - NEVER shorten the name — use every word that appears in the header
 - NEVER leave name as null or "?" — always put something
 - For accessories, use the full accessory description as the name
+DIMENSION ANNOTATION RULE: Labels like "Ø35", "Ø60", "H25", "W120" next to technical drawings are SIZE MEASUREMENTS — they are NEVER product names or codes. The product name always comes from a bold section header (e.g. "AVRO Junior Studio Natural"). Never use a measurement label as a name.
 CRITICAL — PRODUCT POSITION INDEX:
 - This page may show MULTIPLE product families stacked vertically (e.g. one product at the top half, another at the bottom half).
 - Each product family has a PHOTO/IMAGE associated with it — the photo is positioned near that product's section.
@@ -217,6 +218,7 @@ Fields to include (only when value exists):
 - wattage: e.g. "7.5W"
 - price: number (e.g. 3120.00) — required if visible
 - currency: e.g. "RMB" — required if visible
+- type: lamp type from the "Type:" spec line — e.g. "pendant", "wall", "ceiling", "floor", "table" — include for ALL rows in that product family if visible; omit if not stated
 - description: short description, mounting type, or accessory use
 - extra_fields: object with any of {ip_rating, dimming, voltage, driver, structure, diffuser, net_weight}
 - is_accessory: true — include ONLY for rows under an "Accessories" / "Accessori" section header; omit this field entirely for main product rows
@@ -238,6 +240,7 @@ CRITICAL NAME RULE:
 - NEVER shorten the name — use every word that appears in the header
 - NEVER leave name as null or "?" — always put something
 - For accessories, use the full accessory description as the name
+DIMENSION ANNOTATION RULE: Labels like "Ø35", "Ø60", "H25", "W120" next to technical drawings are SIZE MEASUREMENTS — they are NEVER product names or codes. The product name always comes from a bold section header. Never use a measurement label as a name.
 CRITICAL — PRODUCT POSITION INDEX:
 - This section may show MULTIPLE product families stacked vertically.
 - You MUST assign a `product_index` to every row: 0 for the FIRST (topmost) product family visible in this section, 1 for the SECOND, etc.
@@ -266,6 +269,7 @@ Fields to include (only when value exists):
 - wattage: e.g. "7.5W"
 - price: number (e.g. 3120.00) — required if visible
 - currency: e.g. "RMB" — required if visible
+- type: lamp type from the "Type:" spec line — e.g. "pendant", "wall", "ceiling", "floor", "table" — include for ALL rows in that product family if visible; omit if not stated
 - description: short description, mounting type, or accessory use
 - extra_fields: object with any of {ip_rating, dimming, voltage, driver, structure, diffuser, net_weight}
 - is_accessory: true — include ONLY for rows under an "Accessories" / "Accessori" section header; omit this field entirely for main product rows
@@ -461,10 +465,16 @@ def describe_image(api_key: str, image: Image.Image) -> str:
 DIM_BOX_PROMPT = """This is a page from a lighting product catalog.
 Find every DIMENSION DRAWING on this page.
 A dimension drawing is a technical outline/silhouette of a lamp or light fixture
-(pendant, wall lamp, floor lamp, etc.) that has measurement annotations around it
-— numbers like Ø60, Ø35, H25, W40, etc.
-These drawings are always inside a clearly bordered rectangular box, located on the
-LEFT side of each product section.
+(pendant, wall lamp, floor lamp, etc.) — it shows the shape of the product with
+measurement annotations like Ø60, Ø35, H25, W40 around it.
+These drawings sit inside a clearly bordered rectangular box on the LEFT side of
+each product section.
+CRITICAL — HOW MANY TO FIND:
+- Catalog pages often show 2 or more product families stacked vertically, separated
+  by a thin horizontal line. Each product family has its OWN bordered drawing box.
+- Count the horizontal dividers on the page — each section above/below a divider
+  that contains a lamp silhouette has its own drawing box. Find ALL of them.
+- Do NOT stop after finding one. Keep scanning the full page top to bottom.
 For each dimension drawing box, return its bounding box as percentages of the full
 image width and height.
 Return ONLY a JSON array, nothing else:
@@ -476,8 +486,7 @@ Rules:
 - Do NOT include product name text, spec tables, "Light source", "Type", "Volt" text, or any accessory lists
 - Crop tightly to the drawing box border
 - If no dimension drawings exist on this page, return []
-- Sort top to bottom
-- Return ALL drawings found, not just the first two"""
+- Sort top to bottom — first drawing in array = topmost on page"""
 
 PHOTO_BOX_PROMPT = """This is a page from a lighting product catalog.
 Find every PRODUCT PHOTO on this page.
