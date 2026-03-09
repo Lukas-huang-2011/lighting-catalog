@@ -442,60 +442,124 @@ def _parse_price(price_str: str) -> float | None:
         return None
 
 
+def _format_price_num(value: float) -> str:
+    """
+    Format a converted price in European catalog style.
+    e.g. 1234.56 -> "1.234,56"
+    """
+    rounded  = round(value, 2)
+    int_part = int(rounded)
+    dec_part = round((rounded - int_part) * 100)
+    int_str  = f"{int_part:,}".replace(",", ".")   # thousands dot
+    return f"{int_str},{dec_part:02d}"
+
+
 def convert_prices(pdf_bytes: bytes, from_currency: str, multiplier: float,
                    to_currency: str) -> bytes:
     """
-    Convert prices in a PDF.
-    from_currency can be:
-      - A symbol like "E", "$", "P" -> finds prices written as E149,00
-      - A text label like "RMB", "EUR" -> finds standalone numbers on pages
-        that contain that label in a column header
-    Replaces price text and prepends to_currency symbol/label.
+    Convert prices in a PDF from one currency to another.
+
+    Handles three price formats found in Italian/European catalogs:
+      1. Symbol before number:  e.g.  149,00  or   1.234,56
+      2. Symbol after number:   e.g.  149,00  or   1.234,56
+      3. Column header mode:    bare decimal numbers on a page whose header
+                                contains the currency label (EUR, RMB...)
+
+    Strategy: redact the original span (white fill) and insert the converted
+    number right-aligned within the same bounding box, preserving the original
+    font size and colour.
     """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    # Determine if from_currency is a symbol or a text label
-    is_symbol = len(from_currency.strip()) <= 2 and not from_currency.strip().isalpha()
+    fc = from_currency.strip()
+
+    # A currency is a "symbol" (e.g. euro sign) if short and not pure letters.
+    is_symbol = len(fc) <= 2 and not fc.isalpha()
+
     if is_symbol:
-        escaped = re.escape(from_currency.strip())
-        pattern = re.compile(rf'{escaped}\s*([\d][\d\s,\.]*)', re.UNICODE)
-    else:
-        pattern = re.compile(r'\b(\d{3,}(?:[.,]\d{2})?)\b')
+        esc      = re.escape(fc)
+        pat_pre  = re.compile(rf'{esc}\s*([\d][\d.,\s]*\d|\d+)', re.UNICODE)
+        pat_post = re.compile(rf'([\d][\d.,\s]*\d|\d+)\s*{esc}', re.UNICODE)
+
     for page in doc:
-        raw = page.get_text("rawdict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
+        raw       = page.get_text("rawdict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
         page_text = page.get_text()
-        # For label-based currencies, skip pages that don't mention the label
-        if not is_symbol and from_currency.upper() not in page_text.upper():
+
+        if not is_symbol and fc.upper() not in page_text.upper():
             continue
-        redactions = []
+
+        redactions = []  # (bbox, new_number_str, font_size, rgb)
+
         for block in raw.get("blocks", []):
             for line in block.get("lines", []):
                 for span in line.get("spans", []):
                     text = span.get("text", "")
-                    m = pattern.search(text)
-                    if not m:
+                    if not text.strip():
                         continue
-                    price_str = m.group(1) if is_symbol else m.group(0)
-                    parsed = _parse_price(price_str)
-                    if parsed is None or parsed < 10:
+
+                    price_str = None
+
+                    if is_symbol:
+                        m = pat_pre.search(text)
+                        if m:
+                            price_str = m.group(1)
+                        else:
+                            m = pat_post.search(text)
+                            if m:
+                                price_str = m.group(1)
+                    else:
+                        lbl = re.escape(fc)
+                        # a) label before number: "EUR 149,00"
+                        m = re.search(
+                            rf'\b{lbl}[\s.,]*([\d][\d.,\s]*\d|\d+)',
+                            text, re.IGNORECASE)
+                        if m:
+                            price_str = m.group(1).strip()
+                        else:
+                            # b) label after number: "149,00 EUR"
+                            m = re.search(
+                                rf'([\d][\d.,\s]*\d|\d+)[\s.,]*{lbl}\b',
+                                text, re.IGNORECASE)
+                            if m:
+                                price_str = m.group(1).strip()
+                            else:
+                                # c) bare decimal number column (e.g. "1.234,56")
+                                m = re.fullmatch(r'\s*(\d[\d.]*[,\.]\d{2})\s*', text)
+                                if m:
+                                    price_str = m.group(1).strip()
+
+                    if not price_str:
                         continue
-                    new_price = parsed * multiplier
-                    new_price_str = f"{new_price:,.2f}"
-                    new_text = text[:m.start()] + f"{to_currency} {new_price_str}" + text[m.end():]
-                    bbox = fitz.Rect(span["bbox"])
-                    font_size = span.get("size", 10)
-                    c = span.get("color", 0)
-                    rgb = ((c >> 16 & 255) / 255, (c >> 8 & 255) / 255, (c & 255) / 255)
-                    redactions.append((bbox, new_text, font_size, rgb))
+
+                    parsed  = _parse_price(price_str)
+                    min_val = 10 if is_symbol else 50
+                    if parsed is None or parsed < min_val:
+                        continue
+
+                    new_val = parsed * multiplier
+                    new_str = _format_price_num(new_val)
+
+                    bbox  = fitz.Rect(span["bbox"])
+                    fsize = span.get("size", 10)
+                    c     = span.get("color", 0)
+                    rgb   = ((c >> 16 & 255) / 255,
+                             (c >> 8  & 255) / 255,
+                             (c       & 255) / 255)
+                    redactions.append((bbox, new_str, fsize, rgb))
+
         for bbox, _, _, _ in redactions:
             page.add_redact_annot(bbox, fill=(1, 1, 1))
         page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
-        for bbox, new_text, font_size, rgb in redactions:
-            page.insert_text(
-                (bbox.x0, bbox.y0 + font_size * 0.85),
-                new_text,
-                fontsize=font_size,
-                color=rgb
-            )
+
+        for bbox, new_str, fsize, rgb in redactions:
+            try:
+                tw = fitz.get_textlength(new_str, fontname="helv", fontsize=fsize)
+            except Exception:
+                tw = len(new_str) * fsize * 0.55
+            x = max(bbox.x0, bbox.x1 - tw)   # right-align, clamp to left edge
+            y = bbox.y0 + fsize * 0.85
+            page.insert_text((x, y), new_str, fontname="helv",
+                             fontsize=fsize, color=rgb)
+
     buf = io.BytesIO()
     doc.save(buf, garbage=4, deflate=True)
     doc.close()
