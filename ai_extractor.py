@@ -199,7 +199,7 @@ CRITICAL — AVOID DUPLICATES:
 - Each unique product code should appear exactly ONCE in your output.
 - Do NOT repeat an accessory row just because it shows up under a second product family.
 RULES:
-- One JSON object per code/row
+- CRITICAL — ONE CODE PER OBJECT: Each JSON object = exactly ONE product row = exactly ONE code in the `codes` array. NEVER group multiple codes from the same family into one object. If a family has 10 color variants (10 rows), output 10 separate JSON objects — one per row. The `codes` array always has exactly 1 element: ["SINGLE-CODE"].
 - Prices are plain numbers (e.g. 3120.00) — convert comma decimals: 3120,00 → 3120.00
 - Find currency from the column HEADER (e.g. "RMBexcl. VAT" → "RMB")
 - OMIT any field that has no value — do NOT write null, just skip the key entirely
@@ -208,7 +208,7 @@ RULES:
 - CCT RULE: Values like "2700K", "3000K", "4000K" are color temperatures shown in a CCT column — put them in the `cct` field ONLY, NEVER include them in the `codes` array. Codes are alphanumeric article numbers like "21019/DIM/AR" — they never start with a temperature value
 - If a CCT value (e.g. 2700K) appears next to multiple codes in the same group, apply that cct value to all those codes
 Fields to include (only when value exists):
-- codes: ["CODE"] — required
+- codes: ["CODE"] — required, always exactly ONE code per object
 - name: FULL product family name (e.g. "AVRO Studio Natural", "SPIDER LED 40") — ALWAYS required, use every word, never "?"
 - product_index: integer — REQUIRED — 0 for topmost product family, 1 for the next one down, etc.
 - color: color name (e.g. "Arancio", "Bianco")
@@ -250,7 +250,7 @@ IMPORTANT — AVOID DUPLICATES:
 - Do NOT extract a row if its code text is clearly cut off or only partially visible at the edge.
 - Only extract rows where you can fully read the product code.
 RULES:
-- One JSON object per code/row
+- CRITICAL — ONE CODE PER OBJECT: Each JSON object = exactly ONE product row = exactly ONE code in the `codes` array. NEVER group multiple codes from the same family into one object. If a family has 10 color variants (10 rows), output 10 separate JSON objects — one per row. The `codes` array always has exactly 1 element: ["SINGLE-CODE"].
 - Prices are plain numbers (e.g. 3120.00) — convert comma decimals: 3120,00 → 3120.00
 - Find currency from the column HEADER (e.g. "RMBexcl. VAT" → "RMB")
 - OMIT any field that has no value — do NOT write null, just skip the key entirely
@@ -259,7 +259,7 @@ RULES:
 - CCT RULE: Values like "2700K", "3000K", "4000K" are color temperatures shown in a CCT column — put them in the `cct` field ONLY, NEVER include them in the `codes` array. Codes are alphanumeric article numbers like "21019/DIM/AR" — they never start with a temperature value
 - If a CCT value (e.g. 2700K) appears next to multiple codes in the same group, apply that cct value to all those codes
 Fields to include (only when value exists):
-- codes: ["CODE"] — required
+- codes: ["CODE"] — required, always exactly ONE code per object
 - name: FULL product family name (e.g. "AVRO Studio Natural", "SPIDER LED 40") — ALWAYS required, use every word, never "?"
 - product_index: integer — REQUIRED — 0 for topmost product family in this section, 1 for the next, etc.
 - color: color name (e.g. "Arancio", "Bianco")
