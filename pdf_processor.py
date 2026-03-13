@@ -404,24 +404,41 @@ def _trim_whitespace(img: Image.Image, threshold: int = 245) -> Image.Image | No
     return trimmed
 
 
-def _crop_to_drawing_box(img: Image.Image, min_line_fraction: float = 0.38) -> Image.Image:
+def _crop_to_drawing_box(img: Image.Image,
+                         min_run_fraction: float = 0.60,
+                         dark_thresh: int = 80) -> Image.Image:
     """
     When an AI bounding box includes section-header text above the bordered drawing
-    frame, this function finds the top border line of that frame and crops from there.
+    frame, find the top border line of that frame and crop from there.
 
-    Strategy: scan rows top-to-bottom; the first row where ≥38% of pixels are dark
-    (< 128 grey) is the horizontal border line of the drawing box.  Text rows have
-    scattered dark pixels well below that threshold.
+    Key insight: a border line is a SOLID horizontal stroke — one very long
+    consecutive run of dark pixels.  Text characters have white gaps between
+    letters; even a wide bold heading has a max consecutive run of only ~20-40 px,
+    well below the 60 % threshold used here.
+
+    Scans rows top-to-bottom; the first row whose longest consecutive run of pixels
+    darker than `dark_thresh` spans ≥ 60 % of the image width is the box border.
     """
     import numpy as np
-    arr   = np.array(img.convert("L"))
-    h, w  = arr.shape
+    arr  = np.array(img.convert("L"))
+    h, w = arr.shape
+
     for y in range(h):
-        dark_fraction = (arr[y] < 128).sum() / w
-        if dark_fraction >= min_line_fraction:
-            # Include the border line itself (start 1 px above)
+        row = arr[y] < dark_thresh           # boolean: True where pixel is dark
+        if row.sum() < int(w * 0.4):         # cheap pre-filter: skip sparse rows
+            continue
+        # Longest consecutive run of True values
+        padded = np.r_[False, row, False]
+        diffs  = np.diff(padded.view(np.int8))
+        starts = np.where(diffs >  0)[0]
+        ends   = np.where(diffs <  0)[0]
+        if not len(starts):
+            continue
+        max_run = int((ends - starts).max())
+        if max_run / w >= min_run_fraction:
             return img.crop((0, max(0, y - 1), img.width, img.height))
-    return img   # no border found — return unchanged
+
+    return img   # no solid border found — return unchanged
 
 
 def _trim_whitespace_dim(img: Image.Image, threshold: int = 248) -> Image.Image | None:
