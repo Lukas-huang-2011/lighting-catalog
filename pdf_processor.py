@@ -291,7 +291,9 @@ def extract_page_images(pdf_bytes: bytes, page_num: int, api_key: str = None) ->
                 x1 = min(px_w, int(b["x1"] / 100 * px_w) + pad)
                 y1 = min(px_h, int(b["y1"] / 100 * px_h) + pad)
                 crop = full.crop((x0, y0, x1, y1))
-                # Clean up any stray text headers or whitespace that leaked into the crop
+                # Step 1: find the border line and cut off any header text above it
+                crop = _crop_to_drawing_box(crop)
+                # Step 2: trim remaining whitespace padding
                 cleaned = _trim_whitespace_dim(crop)
                 if cleaned is not None and cleaned.width > 30 and cleaned.height > 30:
                     dim_imgs.append(cleaned)
@@ -402,6 +404,26 @@ def _trim_whitespace(img: Image.Image, threshold: int = 245) -> Image.Image | No
     return trimmed
 
 
+def _crop_to_drawing_box(img: Image.Image, min_line_fraction: float = 0.38) -> Image.Image:
+    """
+    When an AI bounding box includes section-header text above the bordered drawing
+    frame, this function finds the top border line of that frame and crops from there.
+
+    Strategy: scan rows top-to-bottom; the first row where ≥38% of pixels are dark
+    (< 128 grey) is the horizontal border line of the drawing box.  Text rows have
+    scattered dark pixels well below that threshold.
+    """
+    import numpy as np
+    arr   = np.array(img.convert("L"))
+    h, w  = arr.shape
+    for y in range(h):
+        dark_fraction = (arr[y] < 128).sum() / w
+        if dark_fraction >= min_line_fraction:
+            # Include the border line itself (start 1 px above)
+            return img.crop((0, max(0, y - 1), img.width, img.height))
+    return img   # no border found — return unchanged
+
+
 def _trim_whitespace_dim(img: Image.Image, threshold: int = 248) -> Image.Image | None:
     """
     Light whitespace trim for dimension drawings -- keeps more context
@@ -461,80 +483,80 @@ def convert_prices(pdf_bytes: bytes, from_currency: str, multiplier: float,
     """
     Convert prices in a PDF from one currency to another.
 
-    Handles three price formats found in Italian/European catalogs:
-      1. Symbol before number:  e.g.  149,00  or   1.234,56
-      2. Symbol after number:   e.g.  149,00  or   1.234,56
-      3. Column header mode:    bare decimal numbers on a page whose header
-                                contains the currency label (EUR, RMB...)
+    Two price formats are handled automatically on every page that contains
+    the currency marker:
 
-    Strategy: redact the original span (white fill) and insert the converted
-    number right-aligned within the same bounding box, preserving the original
-    font size and colour.
+      1. Symbol/label attached to each number in the same text span:
+            e.g.  €149,00  |  149,00€  |  EUR 17550,00  |  17550,00 EUR
+
+      2. Column-header mode — the currency appears only in the column header
+         and each data cell is a bare decimal number:
+            header: "RMBexcl. VAT"  or  "€"  or  "PRICE EUR"
+            cells:  7020,00  |  1.234,56  |  22750,00
+
+    Numbers with exactly 2 decimal places are treated as prices; bare integers
+    or values like "230" (voltage) or "2,5" (weight) are never touched.
+
+    Strategy: redact the original span (white rectangle) then insert the
+    converted number right-aligned inside the same bounding box.
     """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    fc = from_currency.strip()
+    fc  = from_currency.strip()
+    esc = re.escape(fc)
 
-    # A currency is a "symbol" (e.g. euro sign) if short and not pure letters.
-    is_symbol = len(fc) <= 2 and not fc.isalpha()
-
-    if is_symbol:
-        esc      = re.escape(fc)
-        pat_pre  = re.compile(rf'{esc}\s*([\d][\d.,\s]*\d|\d+)', re.UNICODE)
-        pat_post = re.compile(rf'([\d][\d.,\s]*\d|\d+)\s*{esc}', re.UNICODE)
+    # Pattern 1: currency marker immediately before a number (same span)
+    pat_before = re.compile(rf'{esc}\s*([\d][0-9.,]*)', re.UNICODE | re.IGNORECASE)
+    # Pattern 2: currency marker immediately after a number (same span)
+    pat_after  = re.compile(rf'([\d][0-9.,]*)\s*{esc}', re.UNICODE | re.IGNORECASE)
+    # Pattern 3: the ENTIRE span text is a bare decimal price (column-header mode).
+    # Requires exactly 2 decimal digits — this reliably distinguishes prices
+    # (7020,00 / 1.234,56) from voltages (230), weights (2,5), dimensions (Ø40).
+    pat_bare   = re.compile(
+        r'^(\d{1,3}(?:[.,]\d{3})*[.,]\d{2}|\d+[.,]\d{2})$'
+    )
 
     for page in doc:
-        raw       = page.get_text("rawdict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
         page_text = page.get_text()
 
-        if not is_symbol and fc.upper() not in page_text.upper():
+        # Skip pages that don't mention this currency at all
+        if fc.upper() not in page_text.upper():
             continue
 
-        redactions = []  # (bbox, new_number_str, font_size, rgb)
+        raw        = page.get_text("rawdict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
+        redactions = []   # list of (bbox, new_str, fsize, rgb)
 
         for block in raw.get("blocks", []):
             for line in block.get("lines", []):
                 for span in line.get("spans", []):
-                    text = span.get("text", "")
-                    if not text.strip():
+                    text = span.get("text", "").strip()
+                    if not text:
                         continue
 
                     price_str = None
 
-                    if is_symbol:
-                        m = pat_pre.search(text)
-                        if m:
-                            price_str = m.group(1)
-                        else:
-                            m = pat_post.search(text)
-                            if m:
-                                price_str = m.group(1)
-                    else:
-                        lbl = re.escape(fc)
-                        # a) label before number: "EUR 149,00"
-                        m = re.search(
-                            rf'\b{lbl}[\s.,]*([\d][\d.,\s]*\d|\d+)',
-                            text, re.IGNORECASE)
+                    # Try: marker attached before number  →  e.g. €7059,00
+                    m = pat_before.search(text)
+                    if m:
+                        price_str = m.group(1).strip()
+
+                    # Try: marker attached after number  →  e.g. 7059,00€
+                    if price_str is None:
+                        m = pat_after.search(text)
                         if m:
                             price_str = m.group(1).strip()
-                        else:
-                            # b) label after number: "149,00 EUR"
-                            m = re.search(
-                                rf'([\d][\d.,\s]*\d|\d+)[\s.,]*{lbl}\b',
-                                text, re.IGNORECASE)
-                            if m:
-                                price_str = m.group(1).strip()
-                            else:
-                                # c) bare decimal number column (e.g. "1.234,56")
-                                m = re.fullmatch(r'\s*(\d[\d.]*[,\.]\d{2})\s*', text)
-                                if m:
-                                    price_str = m.group(1).strip()
+
+                    # Try: whole span is a bare decimal price (column-header mode)
+                    if price_str is None:
+                        m = pat_bare.match(text)
+                        if m:
+                            price_str = m.group(1)
 
                     if not price_str:
                         continue
 
-                    parsed  = _parse_price(price_str)
-                    min_val = 10 if is_symbol else 50
-                    if parsed is None or parsed < min_val:
+                    parsed = _parse_price(price_str)
+                    # Skip near-zero or obviously non-price values
+                    if parsed is None or parsed < 5:
                         continue
 
                     new_val = parsed * multiplier
@@ -544,10 +566,14 @@ def convert_prices(pdf_bytes: bytes, from_currency: str, multiplier: float,
                     fsize = span.get("size", 10)
                     c     = span.get("color", 0)
                     rgb   = ((c >> 16 & 255) / 255,
-                             (c >> 8  & 255) / 255,
+                             (c >>  8 & 255) / 255,
                              (c       & 255) / 255)
                     redactions.append((bbox, new_str, fsize, rgb))
 
+        if not redactions:
+            continue
+
+        # Whiteout originals first, then write new values
         for bbox, _, _, _ in redactions:
             page.add_redact_annot(bbox, fill=(1, 1, 1))
         page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
@@ -557,7 +583,9 @@ def convert_prices(pdf_bytes: bytes, from_currency: str, multiplier: float,
                 tw = fitz.get_textlength(new_str, fontname="helv", fontsize=fsize)
             except Exception:
                 tw = len(new_str) * fsize * 0.55
-            x = max(bbox.x0, bbox.x1 - tw)   # right-align, clamp to left edge
+            # Right-align the replacement within the original span's bounding box
+            x = max(bbox.x0, bbox.x1 - tw)
+            # Baseline sits ~85% of the way down from the top of the bbox
             y = bbox.y0 + fsize * 0.85
             page.insert_text((x, y), new_str, fontname="helv",
                              fontsize=fsize, color=rgb)
