@@ -186,7 +186,7 @@ CRITICAL NAME RULE:
 - If the header is cut off (not visible in this image), look at the codes: find the nearest name visible anywhere and use it; or use the code prefix (e.g. "21019")
 - NEVER shorten the name — use every word that appears in the header
 - NEVER leave name as null or "?" — always put something
-- For accessories, use the full accessory description as the name
+- *** ACCESSORY EXCEPTION ***: "Accessories" / "Accessori" is a SECTION HEADER, NOT a product name. NEVER use "Accessories" or "Accessori" as the name field. For each row under that header, the name is the ITEM DESCRIPTION from the first column (e.g. "Multisocket with cable", "Tuya WiFi, RF, BT device for dimming", "Button for Tuya"). Multiple color variants of the same accessory item share that item's description as their name.
 DIMENSION ANNOTATION RULE: Labels like "Ø35", "Ø60", "H25", "W120" next to technical drawings are SIZE MEASUREMENTS — they are NEVER product names or codes. The product name always comes from a bold section header (e.g. "AVRO Junior Studio Natural"). Never use a measurement label as a name.
 CRITICAL — PRODUCT POSITION INDEX:
 - This page may show MULTIPLE product families stacked vertically (e.g. one product at the top half, another at the bottom half).
@@ -239,7 +239,7 @@ CRITICAL NAME RULE:
 - If the header is cut off (not visible in this image), look at the codes: find the nearest name visible anywhere and use it; or use the code prefix (e.g. "21019")
 - NEVER shorten the name — use every word that appears in the header
 - NEVER leave name as null or "?" — always put something
-- For accessories, use the full accessory description as the name
+- *** ACCESSORY EXCEPTION ***: "Accessories" / "Accessori" is a SECTION HEADER, NOT a product name. NEVER use "Accessories" or "Accessori" as the name field. For each row under that header, the name is the ITEM DESCRIPTION from the first column (e.g. "Multisocket with cable", "Tuya WiFi, RF, BT device for dimming", "Button for Tuya"). Multiple color variants of the same accessory item share that item's description as their name.
 DIMENSION ANNOTATION RULE: Labels like "Ø35", "Ø60", "H25", "W120" next to technical drawings are SIZE MEASUREMENTS — they are NEVER product names or codes. The product name always comes from a bold section header. Never use a measurement label as a name.
 CRITICAL — PRODUCT POSITION INDEX:
 - This section may show MULTIPLE product families stacked vertically.
