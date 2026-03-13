@@ -97,7 +97,7 @@ def search_by_code(client: Client, query: str) -> list:
 
     # 1. Exact code match (e.g. user typed full code "21019/DIM/AR")
     exact = client.table("products") \
-        .select("*, pdfs(name), product_images(image_url, image_hash)") \
+        .select("*, pdfs(name), product_images(image_url, image_hash, image_description)") \
         .contains("codes", [q.upper()]) \
         .limit(50).execute()
     for row in (exact.data or []):
@@ -107,7 +107,7 @@ def search_by_code(client: Client, query: str) -> list:
 
     # 2. Partial match — searches codes, name, color, description, anything in raw_text
     partial = client.table("products") \
-        .select("*, pdfs(name), product_images(image_url, image_hash)") \
+        .select("*, pdfs(name), product_images(image_url, image_hash, image_description)") \
         .ilike("raw_text", f"%{q}%") \
         .limit(100).execute()
     for row in (partial.data or []):
