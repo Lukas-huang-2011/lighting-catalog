@@ -206,10 +206,10 @@ def _find_drawing_rects(page) -> list:
                 found.append(best)
         if found:
             found.sort(key=lambda r: r.y0)
-            return found[:2]
+            return found[:6]
     # -- 4. Fallback: return all qualifying left-zone rects sorted by Y ----
     rect_pool.sort(key=lambda r: r.y0)
-    return rect_pool[:2]
+    return rect_pool[:6]
 
 
 def _extend_crop_to_content(full, x0, y0, x1, y1, px_w, px_h):
@@ -284,15 +284,17 @@ def extract_page_images(pdf_bytes: bytes, page_num: int, api_key: str = None) ->
         # -- Dimension drawings --
         boxes = ai.find_dim_boxes(api_key, full)
         if boxes:
-            pad = 6
+            pad = 4
             for b in boxes:
                 x0 = max(0, int(b["x0"] / 100 * px_w) - pad)
                 y0 = max(0, int(b["y0"] / 100 * px_h) - pad)
                 x1 = min(px_w, int(b["x1"] / 100 * px_w) + pad)
                 y1 = min(px_h, int(b["y1"] / 100 * px_h) + pad)
                 crop = full.crop((x0, y0, x1, y1))
-                if crop.width > 30 and crop.height > 30:
-                    dim_imgs.append(crop)
+                # Clean up any stray text headers or whitespace that leaked into the crop
+                cleaned = _trim_whitespace_dim(crop)
+                if cleaned is not None and cleaned.width > 30 and cleaned.height > 30:
+                    dim_imgs.append(cleaned)
         # -- Product photos (real-life images) --
         photo_boxes = ai.find_photo_boxes(api_key, full)
         if photo_boxes:
