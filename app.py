@@ -499,21 +499,19 @@ elif page == "🔄 Convert Prices":
         col1, col2 = st.columns(2)
         with col1:
             st.markdown("**Original currency in the PDF**")
-            from_type = st.radio("How are prices marked?", [
-                "Attached to each price (e.g. €149,00  or  149,00€)",
-                "Column header only (e.g. header says RMB or EUR, bare numbers below)"
-            ], label_visibility="collapsed")
-            if from_type.startswith("Attached"):
-                from_currency = st.text_input("Currency symbol", value="€")
-            else:
-                from_currency = st.text_input("Currency label in column header", value="RMB")
+            from_currency = st.text_input(
+                "Currency symbol or label to find",
+                value="€",
+                help="e.g. € · $ · £ · RMB · EUR · USD — all price formats are detected automatically"
+            )
         with col2:
             st.markdown("**Convert to**")
             to_currency = st.text_input("New currency label/symbol", value="€")
             multiplier = st.number_input("Multiplier", min_value=0.0001, value=0.13, step=0.01,
                                          help="New price = original × multiplier")
 
-        st.info(f"**Example:** {from_currency} 14469.00 → {to_currency} {14469.00 * multiplier:,.2f}")
+        st.caption("All price formats are detected automatically: symbol on each price (€149,00 or 149,00€), and column-header mode (header says RMB / EUR, bare numbers below).")
+        st.info(f"**Example:** {from_currency} 14469,00 → {to_currency} {pdf._format_price_num(14469.0 * multiplier)}")
 
         if st.button("🔄 Convert & Download", type="primary"):
             pdf_bytes = uploaded_conv.read()
