@@ -22,14 +22,46 @@ st.set_page_config(page_title="柒点 · 灯具目录", page_icon="💡", layout
 
 st.markdown("""
 <style>
-/* ── Base ──────────────────────────────────────────────────────── */
+/* ══════════════════════════════════════════════════════════════════
+   KEYFRAMES
+══════════════════════════════════════════════════════════════════ */
+@keyframes qs-fadeup   { from{opacity:0;transform:translateY(16px)} to{opacity:1;transform:translateY(0)} }
+@keyframes qs-fadedown { from{opacity:0;transform:translateY(-10px)} to{opacity:1;transform:translateY(0)} }
+@keyframes qs-fadein   { from{opacity:0} to{opacity:1} }
+@keyframes qs-scalein  { from{opacity:0;transform:scale(0.95)} to{opacity:1;transform:scale(1)} }
+@keyframes qs-slidein  { from{opacity:0;transform:translateX(-14px)} to{opacity:1;transform:translateX(0)} }
+@keyframes rd-breathe  { 0%,100%{transform:scale(0.93);opacity:0.5} 50%{transform:scale(1.03);opacity:1} }
+
+/* ── Base ───────────────────────────────────────────────────────── */
 html, body, .stApp,
 [data-testid="stAppViewContainer"],
 [data-testid="stMain"] { background-color: #0a0a0a !important; }
 [data-testid="stHeader"] { background-color: #0a0a0a !important; border-bottom: 1px solid #1c1c1c; }
 [data-testid="stSidebar"],
 section[data-testid="stSidebarContent"] { background-color: #0e0e0e !important; border-right: 1px solid #1c1c1c !important; }
-.block-container { padding-top: 1.5rem; }
+
+/* ── Page entrance (triggers on every page switch) ──────────────── */
+.block-container {
+  padding-top: 1.5rem;
+  animation: qs-fadeup 0.38s cubic-bezier(.22,.68,0,1.1) both;
+}
+
+/* Staggered entrance for top-level page elements */
+[data-testid="stVerticalBlock"] > div.element-container {
+  animation: qs-fadeup 0.3s cubic-bezier(.22,.68,0,1.1) both;
+}
+[data-testid="stVerticalBlock"] > div.element-container:nth-child(1)  { animation-delay:.04s }
+[data-testid="stVerticalBlock"] > div.element-container:nth-child(2)  { animation-delay:.08s }
+[data-testid="stVerticalBlock"] > div.element-container:nth-child(3)  { animation-delay:.12s }
+[data-testid="stVerticalBlock"] > div.element-container:nth-child(4)  { animation-delay:.16s }
+[data-testid="stVerticalBlock"] > div.element-container:nth-child(5)  { animation-delay:.20s }
+[data-testid="stVerticalBlock"] > div.element-container:nth-child(6)  { animation-delay:.23s }
+[data-testid="stVerticalBlock"] > div.element-container:nth-child(n+7){ animation-delay:.26s }
+
+/* Sidebar slides in from the left */
+section[data-testid="stSidebarContent"] {
+  animation: qs-slidein 0.4s cubic-bezier(.22,.68,0,1.1) both;
+}
 
 /* ── Typography ────────────────────────────────────────────────── */
 body, p, span, div, label, .stMarkdown { color: #dcdcdc; }
@@ -37,7 +69,7 @@ h1, h2, h3, h4 { color: #ffffff !important; }
 [data-testid="stSidebar"] * { color: #cccccc !important; }
 .stCaption p, small { color: #666 !important; }
 
-/* ── Inputs ────────────────────────────────────────────────────── */
+/* ── Inputs — focus glow ────────────────────────────────────────── */
 .stTextInput > div > div > input,
 .stNumberInput > div > div > input,
 .stTextArea > div > div > textarea {
@@ -45,20 +77,36 @@ h1, h2, h3, h4 { color: #ffffff !important; }
   color: #f0f0f0 !important;
   border: 1px solid #2c2c2c !important;
   border-radius: 6px !important;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
+}
+.stTextInput > div > div > input:focus,
+.stNumberInput > div > div > input:focus,
+.stTextArea > div > div > textarea:focus {
+  border-color: #505050 !important;
+  box-shadow: 0 0 0 3px rgba(255,255,255,0.05) !important;
+  outline: none !important;
 }
 
-/* ── Buttons ───────────────────────────────────────────────────── */
+/* ── Buttons — lift on hover, press on click ────────────────────── */
 .stButton > button {
   background-color: #1a1a1a !important;
   color: #dedede !important;
   border: 1px solid #333 !important;
   border-radius: 8px !important;
-  transition: all 0.18s ease !important;
+  transition: background-color 0.18s ease, border-color 0.18s ease,
+              color 0.18s ease, transform 0.14s ease,
+              box-shadow 0.18s ease !important;
 }
 .stButton > button:hover {
   background-color: #242424 !important;
   border-color: #666 !important;
   color: #fff !important;
+  transform: translateY(-2px) !important;
+  box-shadow: 0 5px 14px rgba(255,255,255,0.05) !important;
+}
+.stButton > button:active {
+  transform: scale(0.96) translateY(0) !important;
+  box-shadow: none !important;
 }
 .stButton > button[kind="primary"] {
   background-color: #efefef !important;
@@ -66,15 +114,27 @@ h1, h2, h3, h4 { color: #ffffff !important; }
   border: none !important;
   font-weight: 700 !important;
 }
-.stButton > button[kind="primary"]:hover { background-color: #ffffff !important; }
+.stButton > button[kind="primary"]:hover {
+  background-color: #ffffff !important;
+  box-shadow: 0 5px 18px rgba(255,255,255,0.12) !important;
+}
+.stButton > button[kind="primary"]:active { transform: scale(0.96) !important; }
 
-/* ── Cards ─────────────────────────────────────────────────────── */
+/* ── Cards — hover lift + border brighten ───────────────────────── */
 .product-card {
   border: 1px solid #1e1e1e !important;
   border-radius: 12px !important;
   padding: 16px !important;
   margin-bottom: 12px !important;
   background: #101010 !important;
+  transition: border-color 0.22s ease, transform 0.22s ease,
+              box-shadow 0.22s ease !important;
+  animation: qs-fadeup 0.32s cubic-bezier(.22,.68,0,1.1) both;
+}
+.product-card:hover {
+  border-color: #383838 !important;
+  transform: translateY(-3px) !important;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5) !important;
 }
 .badge {
   display:inline-block; background:#e8e8e8; color:#0a0a0a;
@@ -85,34 +145,96 @@ h1, h2, h3, h4 { color: #ffffff !important; }
   border-radius:6px; padding:2px 8px; font-size:0.8em; margin:2px; font-weight:600;
 }
 
-/* ── Expanders ─────────────────────────────────────────────────── */
+/* ── Expanders — content fades in on open ───────────────────────── */
 [data-testid="stExpander"] {
   background-color: #101010 !important;
   border: 1px solid #1e1e1e !important;
   border-radius: 8px !important;
+  transition: border-color 0.2s ease !important;
 }
-[data-testid="stExpander"] summary { color: #d0d0d0 !important; }
+[data-testid="stExpander"]:has(details[open]) {
+  border-color: #2e2e2e !important;
+}
+[data-testid="stExpander"] summary {
+  color: #d0d0d0 !important;
+  transition: color 0.15s ease, background-color 0.15s ease !important;
+  border-radius: 8px !important;
+  padding: 8px 12px !important;
+}
+[data-testid="stExpander"] summary:hover {
+  color: #ffffff !important;
+  background-color: #1a1a1a !important;
+}
+[data-testid="stExpanderDetails"] {
+  animation: qs-fadeup 0.24s ease both;
+}
 
-/* ── Metrics ───────────────────────────────────────────────────── */
+/* ── Metrics — scale in + hover lift ───────────────────────────── */
 [data-testid="metric-container"] {
   background: #141414; border: 1px solid #1e1e1e;
   border-radius: 8px; padding: 10px;
+  animation: qs-scalein 0.3s ease both;
+  transition: transform 0.2s ease, box-shadow 0.2s ease,
+              border-color 0.2s ease;
+}
+[data-testid="metric-container"]:hover {
+  transform: scale(1.03);
+  box-shadow: 0 6px 18px rgba(255,255,255,0.04);
+  border-color: #2e2e2e;
 }
 [data-testid="stMetricLabel"] p { color: #777 !important; }
 [data-testid="stMetricValue"] { color: #fff !important; }
 
+/* ── Alerts / notifications slide in ───────────────────────────── */
+[data-testid="stAlert"] {
+  animation: qs-fadeup 0.28s ease both;
+  border-radius: 8px !important;
+}
+[data-testid="stNotification"] {
+  animation: qs-fadedown 0.3s cubic-bezier(.22,.68,0,1.1) both;
+}
+
 /* ── Dividers / Progress ───────────────────────────────────────── */
 hr, [data-testid="stDivider"] { border-color: #1e1e1e !important; }
-.stProgress > div > div > div { background-color: #d0d0d0 !important; }
+.stProgress > div > div > div {
+  background-color: #d0d0d0 !important;
+  transition: width 0.4s cubic-bezier(.22,.68,0,1.1) !important;
+}
 
-/* ── File uploader ─────────────────────────────────────────────── */
+/* ── File uploader — hover glow ─────────────────────────────────── */
 [data-testid="stFileUploader"] {
-  background-color: #101010 !important; border-color: #2a2a2a !important; border-radius: 8px !important;
+  background-color: #101010 !important;
+  border-color: #2a2a2a !important;
+  border-radius: 8px !important;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
+}
+[data-testid="stFileUploader"]:hover {
+  border-color: #444 !important;
+  box-shadow: 0 0 0 3px rgba(255,255,255,0.03) !important;
 }
 
 /* ── Select / Radio ────────────────────────────────────────────── */
-.stSelectbox > div > div { background-color: #141414 !important; color: #f0f0f0 !important; border-color: #2c2c2c !important; }
+.stSelectbox > div > div {
+  background-color: #141414 !important;
+  color: #f0f0f0 !important;
+  border-color: #2c2c2c !important;
+  transition: border-color 0.15s ease !important;
+}
+.stSelectbox > div > div:hover { border-color: #444 !important; }
 [data-testid="stRadio"] label { color: #ccc !important; }
+
+/* ── Images — smooth hover scale ───────────────────────────────── */
+[data-testid="stImage"] img {
+  transition: transform 0.22s ease, box-shadow 0.22s ease;
+  border-radius: 6px;
+}
+[data-testid="stImage"] img:hover {
+  transform: scale(1.03);
+  box-shadow: 0 6px 20px rgba(0,0,0,0.55);
+}
+
+/* ── Spinner ────────────────────────────────────────────────────── */
+[data-testid="stSpinner"] { animation: qs-fadein 0.3s ease both; }
 
 /* ── Logo ───────────────────────────────────────────────────────── */
 .rd-logo {
@@ -128,15 +250,21 @@ hr, [data-testid="stDivider"] { border-color: #1e1e1e !important; }
   font-size:28px; font-weight:900; color:#ffffff; letter-spacing:8px;
   font-family:'PingFang SC','Noto Sans SC','Microsoft YaHei',sans-serif;
 }
-@keyframes rd-breathe {
-  0%,100% { transform:scale(0.93); opacity:0.5; }
-  50%      { transform:scale(1.03); opacity:1;   }
-}
 </style>
 """, unsafe_allow_html=True)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _fetch_pil_from_url(url: str) -> "Image.Image | None":
+    """Download an image from a URL and return a PIL Image, or None on failure."""
+    try:
+        import urllib.request
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            return Image.open(io.BytesIO(resp.read())).copy()
+    except Exception:
+        return None
+
 
 def extract_brand(pdf_name: str) -> str:
     """Extract brand name from PDF filename. e.g. 'Martinelli_luce_2025.pdf' → 'Martinelli Luce'"""
@@ -153,9 +281,17 @@ def _render_cards(products: list, show_similarity: bool = False):
         col_img, col_info = st.columns([1, 3])
         with col_img:
             images = p.get("product_images") or []
-            if images and images[0].get("image_url"):
+            # Prefer the "product" type image; fall back to the first available
+            display_url = None
+            for img in images:
+                if img.get("image_description") == "product" and img.get("image_url"):
+                    display_url = img["image_url"]
+                    break
+            if not display_url and images:
+                display_url = images[0].get("image_url")
+            if display_url:
                 try:
-                    st.image(images[0]["image_url"], use_container_width=True)
+                    st.image(display_url, use_container_width=True)
                 except Exception:
                     st.caption("Image unavailable")
             else:
@@ -281,38 +417,62 @@ if page == "📤 Upload & Extract":
                 products = ai.extract_products_from_page(ai_client, page_img, page_num)
                 log.caption(f"Page {page_num+1}: {len(products)} product(s) → total: {total_products + len(products)}")
 
-                # 2. Extract product photos indexed by product_index.
-                #    AI vision locates each photo top-to-bottom so index 0 = first product, etc.
-                #    Accessories are skipped — they share product_index with their parent
-                #    but don't get their own photo.
-                page_photo_index = {}  # product_index -> (url, hash)
+                # 2. Extract product photos AND dimension drawings indexed by product_index.
+                #    photo_index: product_index -> (url, hash) for real product photos
+                #    dim_index:   product_index -> (url, hash) for dimension/technical drawings
+                #    If no product photo exists for an index, the dim drawing is used as fallback.
+                page_photo_index = {}  # product_index -> (url, hash, "product")
+                page_dim_index   = {}  # product_index -> (url, hash, "dim")
                 if extract_images_flag and products:
                     try:
                         raw = pdf.extract_page_images(pdf_bytes, page_num, api_key=ai_client)
-                        photo_list = raw.get("product", [])
-                        for pidx, pil_img in enumerate(photo_list[:4]):
+                        # Save real product photos
+                        for pidx, pil_img in enumerate(raw.get("product", [])[:4]):
                             try:
-                                img_url = db.upload_image(client, pil_img)
+                                img_url  = db.upload_image(client, pil_img)
                                 img_hash = imgs.compute_hash(pil_img)
                                 page_photo_index[pidx] = (img_url, img_hash)
                             except Exception as e:
-                                errors.append(f"Image upload p{page_num+1}: {e}")
+                                errors.append(f"Photo upload p{page_num+1}[{pidx}]: {e}")
+                        # Save dimension/technical drawings
+                        for pidx, pil_img in enumerate(raw.get("dim", [])[:4]):
+                            try:
+                                img_url  = db.upload_image(client, pil_img)
+                                img_hash = imgs.compute_hash(pil_img)
+                                page_dim_index[pidx] = (img_url, img_hash)
+                            except Exception as e:
+                                errors.append(f"Dim upload p{page_num+1}[{pidx}]: {e}")
                     except Exception as e:
                         errors.append(f"Image extract p{page_num+1}: {e}")
 
-                # 3. Save each product and link only the photo matching its product_index
+                # 3. Save each product and link the photo + dim drawing matching its product_index
                 for prod in products:
                     try:
                         prod_id = db.save_product(client, pdf_id, prod, page_num)
                         total_products += 1
-                        if not prod.get("is_accessory") and page_photo_index:
+                        if not prod.get("is_accessory"):
                             pidx = prod.get("product_index", 0)
+                            # Save product photo (or use dim as "product" fallback if no real photo)
                             if pidx in page_photo_index:
                                 img_url, img_hash = page_photo_index[pidx]
                                 try:
-                                    db.save_product_image(client, prod_id, img_url, img_hash, "")
+                                    db.save_product_image(client, prod_id, img_url, img_hash, "product")
                                 except Exception as e:
-                                    errors.append(f"Image link p{page_num+1}: {e}")
+                                    errors.append(f"Photo link p{page_num+1}: {e}")
+                            elif pidx in page_dim_index:
+                                # No product photo — use dim drawing as visual fallback
+                                img_url, img_hash = page_dim_index[pidx]
+                                try:
+                                    db.save_product_image(client, prod_id, img_url, img_hash, "product")
+                                except Exception as e:
+                                    errors.append(f"Dim-as-photo link p{page_num+1}: {e}")
+                            # Also save the dim drawing under its own "dim" description
+                            if pidx in page_dim_index:
+                                img_url, img_hash = page_dim_index[pidx]
+                                try:
+                                    db.save_product_image(client, prod_id, img_url, img_hash, "dim")
+                                except Exception as e:
+                                    errors.append(f"Dim link p{page_num+1}: {e}")
                     except Exception as e:
                         errors.append(f"Save product p{page_num+1}: {e}")
 
@@ -505,7 +665,31 @@ elif page == "💰 Pricing & Export":
         }
 
         with st.spinner("Filling order template…"):
-            excel_bytes = xl.build_excel_from_template(export_products, order_info=order_info)
+            # Fetch product and dim images from the stored product_images records
+            xl_prod_imgs: dict = {}
+            xl_dim_imgs:  dict = {}
+            for i, p in enumerate(export_products):
+                if p.get("is_accessory"):
+                    continue
+                for img_rec in (p.get("product_images") or []):
+                    desc = img_rec.get("image_description") or ""
+                    url  = img_rec.get("image_url") or ""
+                    if not url:
+                        continue
+                    if desc == "product" and i not in xl_prod_imgs:
+                        pil = _fetch_pil_from_url(url)
+                        if pil:
+                            xl_prod_imgs[i] = pil
+                    elif desc == "dim" and i not in xl_dim_imgs:
+                        pil = _fetch_pil_from_url(url)
+                        if pil:
+                            xl_dim_imgs[i] = pil
+            excel_bytes = xl.build_excel_from_template(
+                export_products,
+                order_info=order_info,
+                product_images=xl_prod_imgs or None,
+                dim_images=xl_dim_imgs or None,
+            )
 
         st.download_button(
             "⬇️ Download Filled Order Template",
