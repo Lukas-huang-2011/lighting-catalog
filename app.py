@@ -500,11 +500,11 @@ elif page == "🔄 Convert Prices":
         with col1:
             st.markdown("**Original currency in the PDF**")
             from_type = st.radio("How are prices marked?", [
-                "Currency symbol before price (e.g. € 149,00)",
-                "No symbol — currency is in column header (e.g. RMB, EUR)"
+                "Attached to each price (e.g. €149,00  or  149,00€)",
+                "Column header only (e.g. header says RMB or EUR, bare numbers below)"
             ], label_visibility="collapsed")
-            if "symbol" in from_type:
-                from_currency = st.text_input("Symbol", value="€")
+            if from_type.startswith("Attached"):
+                from_currency = st.text_input("Currency symbol", value="€")
             else:
                 from_currency = st.text_input("Currency label in column header", value="RMB")
         with col2:
