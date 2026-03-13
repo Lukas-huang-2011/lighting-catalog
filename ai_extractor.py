@@ -470,21 +470,23 @@ measurement annotations like Ø60, Ø35, H25, W40 around it.
 These drawings sit inside a clearly bordered rectangular box on the LEFT side of
 each product section.
 CRITICAL — HOW MANY TO FIND:
-- Catalog pages often show 2 or more product families stacked vertically, separated
-  by a thin horizontal line. Each product family has its OWN bordered drawing box.
-- Count the horizontal dividers on the page — each section above/below a divider
-  that contains a lamp silhouette has its own drawing box. Find ALL of them.
-- Do NOT stop after finding one. Keep scanning the full page top to bottom.
+- Catalog pages routinely show 3, 4, or even more product families stacked vertically,
+  each separated by a thin horizontal rule. Each product family has its OWN bordered
+  drawing box. A page with 4 product families = 4 entries in your JSON array.
+- Count every horizontal divider on the page — each section that contains a lamp
+  silhouette has its own drawing box. Find ALL of them without stopping early.
+- Do NOT stop after 2. Keep scanning the full page from top to bottom.
 For each dimension drawing box, return its bounding box as percentages of the full
 image width and height.
-Return ONLY a JSON array, nothing else:
-[{"x0": 5, "y0": 8, "x1": 35, "y1": 50}, {"x0": 5, "y0": 53, "x1": 35, "y1": 97}]
+Return ONLY a JSON array, nothing else. Example with THREE drawings on a page:
+[{"x0": 4, "y0": 6, "x1": 34, "y1": 34}, {"x0": 4, "y0": 36, "x1": 34, "y1": 65}, {"x0": 4, "y0": 67, "x1": 34, "y1": 96}]
 Rules:
 - x0,y0 = top-left of the drawing box (percentages 0-100)
 - x1,y1 = bottom-right of the drawing box (percentages 0-100)
 - Include ONLY the bordered box containing the lamp silhouette and measurement labels
+- The box starts at the BORDER LINE of the drawing frame — NOT at the product name header above it
 - Do NOT include product name text, spec tables, "Light source", "Type", "Volt" text, or any accessory lists
-- Crop tightly to the drawing box border
+- Crop tightly to the drawing box border, excluding any text headers above the box
 - If no dimension drawings exist on this page, return []
 - Sort top to bottom — first drawing in array = topmost on page"""
 
