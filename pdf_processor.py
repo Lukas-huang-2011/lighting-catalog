@@ -495,39 +495,87 @@ def _format_price_num(value: float) -> str:
     return f"{int_str},{dec_part:02d}"
 
 
+def _pick_fontname(flags: int) -> str:
+    """Return the closest built-in PDF font matching the span's bold/italic flags."""
+    bold   = bool(flags & 16)
+    italic = bool(flags & 2)
+    if bold and italic:
+        return "Helvetica-BoldOblique"
+    if bold:
+        return "Helvetica-Bold"
+    if italic:
+        return "Helvetica-Oblique"
+    return "Helvetica"
+
+
+def _insert_fitted(page, bbox, text: str, fsize: float, rgb: tuple,
+                   fontname: str, align: str = "right") -> None:
+    """
+    Insert `text` inside `bbox`, scaling the font down if needed so it never
+    overflows (up to 60 % of the original size). Alignment: 'right' or 'left'.
+    """
+    for attempt_font in (fontname, "Helvetica", "helv"):
+        try:
+            tw = fitz.get_textlength(text, fontname=attempt_font, fontsize=fsize)
+            fname = attempt_font
+            break
+        except Exception:
+            tw    = len(text) * fsize * 0.55
+            fname = "helv"
+
+    bbox_w = max(1.0, bbox.x1 - bbox.x0)
+
+    # Scale down font size proportionally if text is wider than 130 % of bbox
+    actual_fsize = fsize
+    if tw > bbox_w * 1.3:
+        actual_fsize = fsize * (bbox_w * 1.3 / tw)
+        actual_fsize = max(actual_fsize, fsize * 0.6)   # never go below 60 %
+        try:
+            tw = fitz.get_textlength(text, fontname=fname, fontsize=actual_fsize)
+        except Exception:
+            tw = len(text) * actual_fsize * 0.55
+
+    x = (max(bbox.x0, bbox.x1 - tw)  # right-align (prices)
+         if align == "right"
+         else bbox.x0)                # left-align  (labels)
+    y = bbox.y0 + actual_fsize * 0.85
+
+    page.insert_text((x, y), text, fontname=fname,
+                     fontsize=actual_fsize, color=rgb)
+
+
 def convert_prices(pdf_bytes: bytes, from_currency: str, multiplier: float,
                    to_currency: str) -> bytes:
     """
-    Convert prices in a PDF from one currency to another.
+    Convert every price in a PDF from one currency to another and replace the
+    currency label/symbol itself.
 
-    Two price formats are handled automatically on every page that contains
-    the currency marker:
+    Handled formats (detected automatically on each page):
+      1. Marker attached before the number: €149,00  |  RMB 7020,00
+      2. Marker attached after the number:  149,00€  |  7020,00 RMB
+      3. Column-header mode: "RMBexcl. VAT" header + bare decimal cells below.
+         Numbers must have exactly 2 decimal places (7020,00) to be treated
+         as prices — this excludes voltages (230 V), weights (2,5 kg), etc.
 
-      1. Symbol/label attached to each number in the same text span:
-            e.g.  €149,00  |  149,00€  |  EUR 17550,00  |  17550,00 EUR
+    Currency labels/symbols (spans that contain the marker but no digits) are
+    also replaced with the new currency string.
 
-      2. Column-header mode — the currency appears only in the column header
-         and each data cell is a bare decimal number:
-            header: "RMBexcl. VAT"  or  "€"  or  "PRICE EUR"
-            cells:  7020,00  |  1.234,56  |  22750,00
-
-    Numbers with exactly 2 decimal places are treated as prices; bare integers
-    or values like "230" (voltage) or "2,5" (weight) are never touched.
-
-    Strategy: redact the original span (white rectangle) then insert the
-    converted number right-aligned inside the same bounding box.
+    Font style (bold/italic) and colour of the original span are preserved.
+    The replacement text is scaled down slightly if it would overflow the bbox.
     """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     fc  = from_currency.strip()
+    tc  = to_currency.strip()
     esc = re.escape(fc)
 
-    # Pattern 1: currency marker immediately before a number (same span)
+    # Short symbols like €, $, £ may be mis-encoded in the PDF's text stream,
+    # so we cannot rely on page_text containing them — process every page.
+    # Word labels (RMB, EUR, USD) are unambiguous plain text → safe to filter.
+    fc_is_symbol = len(fc) <= 2 and not fc.isalpha()
+
     pat_before = re.compile(rf'{esc}\s*([\d][0-9.,]*)', re.UNICODE | re.IGNORECASE)
-    # Pattern 2: currency marker immediately after a number (same span)
     pat_after  = re.compile(rf'([\d][0-9.,]*)\s*{esc}', re.UNICODE | re.IGNORECASE)
-    # Pattern 3: the ENTIRE span text is a bare decimal price (column-header mode).
-    # Requires exactly 2 decimal digits — this reliably distinguishes prices
-    # (7020,00 / 1.234,56) from voltages (230), weights (2,5), dimensions (Ø40).
+    # Bare decimal: exactly 2 decimal places (e.g. 7020,00 | 1.234,56 | 14.469,00)
     pat_bare   = re.compile(
         r'^(\d{1,3}(?:[.,]\d{3})*[.,]\d{2}|\d+[.,]\d{2})$'
     )
@@ -535,36 +583,53 @@ def convert_prices(pdf_bytes: bytes, from_currency: str, multiplier: float,
     for page in doc:
         page_text = page.get_text()
 
-        # Skip pages that don't mention this currency at all
-        if fc.upper() not in page_text.upper():
+        # For word labels skip pages that genuinely don't mention the currency.
+        # For symbols always try (encoding may hide them from page_text).
+        if not fc_is_symbol and fc.upper() not in page_text.upper():
             continue
 
         raw        = page.get_text("rawdict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
-        redactions = []   # list of (bbox, new_str, fsize, rgb)
+        # Each item: ('label'|'price', bbox, new_text, fsize, rgb, fontname, align)
+        redactions = []
 
         for block in raw.get("blocks", []):
             for line in block.get("lines", []):
                 for span in line.get("spans", []):
-                    text = span.get("text", "").strip()
+                    text  = span.get("text", "").strip()
                     if not text:
                         continue
 
+                    bbox     = fitz.Rect(span["bbox"])
+                    fsize    = span.get("size", 10)
+                    flags    = span.get("flags", 0)
+                    c        = span.get("color", 0)
+                    rgb      = ((c >> 16 & 255) / 255,
+                                (c >>  8 & 255) / 255,
+                                (c       & 255) / 255)
+                    fontname = _pick_fontname(flags)
+
+                    # ── Case A: span is the currency label/symbol only (no digits) ──
+                    # e.g. "RMBexcl. VAT" → "EURexcl. VAT"  |  "€" → "EUR"
+                    if fc.upper() in text.upper() and not re.search(r'\d', text):
+                        new_label = re.sub(esc, tc, text, flags=re.IGNORECASE)
+                        redactions.append(
+                            ('label', bbox, new_label, fsize, rgb, fontname))
+                        continue
+
+                    # ── Case B: span contains a price number ──
                     price_str = None
 
-                    # Try: marker attached before number  →  e.g. €7059,00
-                    m = pat_before.search(text)
+                    m = pat_before.search(text)        # €7059,00
                     if m:
                         price_str = m.group(1).strip()
 
-                    # Try: marker attached after number  →  e.g. 7059,00€
                     if price_str is None:
-                        m = pat_after.search(text)
+                        m = pat_after.search(text)     # 7059,00€
                         if m:
                             price_str = m.group(1).strip()
 
-                    # Try: whole span is a bare decimal price (column-header mode)
                     if price_str is None:
-                        m = pat_bare.match(text)
+                        m = pat_bare.match(text)       # bare column value
                         if m:
                             price_str = m.group(1)
 
@@ -572,40 +637,25 @@ def convert_prices(pdf_bytes: bytes, from_currency: str, multiplier: float,
                         continue
 
                     parsed = _parse_price(price_str)
-                    # Skip near-zero or obviously non-price values
                     if parsed is None or parsed < 5:
                         continue
 
-                    new_val = parsed * multiplier
-                    new_str = _format_price_num(new_val)
-
-                    bbox  = fitz.Rect(span["bbox"])
-                    fsize = span.get("size", 10)
-                    c     = span.get("color", 0)
-                    rgb   = ((c >> 16 & 255) / 255,
-                             (c >>  8 & 255) / 255,
-                             (c       & 255) / 255)
-                    redactions.append((bbox, new_str, fsize, rgb))
+                    new_str = _format_price_num(parsed * multiplier)
+                    redactions.append(
+                        ('price', bbox, new_str, fsize, rgb, fontname))
 
         if not redactions:
             continue
 
-        # Whiteout originals first, then write new values
-        for bbox, _, _, _ in redactions:
+        # 1. Whiteout all original spans
+        for _, bbox, *_ in redactions:
             page.add_redact_annot(bbox, fill=(1, 1, 1))
         page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
 
-        for bbox, new_str, fsize, rgb in redactions:
-            try:
-                tw = fitz.get_textlength(new_str, fontname="helv", fontsize=fsize)
-            except Exception:
-                tw = len(new_str) * fsize * 0.55
-            # Right-align the replacement within the original span's bounding box
-            x = max(bbox.x0, bbox.x1 - tw)
-            # Baseline sits ~85% of the way down from the top of the bbox
-            y = bbox.y0 + fsize * 0.85
-            page.insert_text((x, y), new_str, fontname="helv",
-                             fontsize=fsize, color=rgb)
+        # 2. Insert replacement text, preserving style and fitting within bbox
+        for kind, bbox, new_text, fsize, rgb, fontname in redactions:
+            _insert_fitted(page, bbox, new_text, fsize, rgb, fontname,
+                           align="right" if kind == "price" else "left")
 
     buf = io.BytesIO()
     doc.save(buf, garbage=4, deflate=True)
