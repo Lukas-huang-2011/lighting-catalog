@@ -511,33 +511,46 @@ def _pick_fontname(flags: int) -> str:
 def _insert_fitted(page, bbox, text: str, fsize: float, rgb: tuple,
                    fontname: str, align: str = "right") -> None:
     """
-    Insert `text` inside `bbox`, scaling the font down if needed so it never
-    overflows (up to 60 % of the original size). Alignment: 'right' or 'left'.
+    Insert `text` near `bbox`.
+
+    Prices  (align='right'): right-aligned within the bbox, font scaled down
+            if the converted number is wider than the original (max 30 % wider).
+    Labels  (align='left'):  left-aligned at bbox.x0, NO scaling — labels are
+            allowed to flow into the white space to their right.  The original
+            bbox may be just a few pixels (e.g. a lone '€' glyph), so forcing
+            the replacement to fit inside it would make it microscopic.
     """
+    # Resolve the font, falling back gracefully
+    fname = "helv"
     for attempt_font in (fontname, "Helvetica", "helv"):
         try:
-            tw = fitz.get_textlength(text, fontname=attempt_font, fontsize=fsize)
+            fitz.get_textlength("X", fontname=attempt_font, fontsize=fsize)
             fname = attempt_font
             break
         except Exception:
-            tw    = len(text) * fsize * 0.55
-            fname = "helv"
+            continue
 
-    bbox_w = max(1.0, bbox.x1 - bbox.x0)
+    try:
+        tw = fitz.get_textlength(text, fontname=fname, fontsize=fsize)
+    except Exception:
+        tw = len(text) * fsize * 0.55
 
-    # Scale down font size proportionally if text is wider than 130 % of bbox
     actual_fsize = fsize
-    if tw > bbox_w * 1.3:
-        actual_fsize = fsize * (bbox_w * 1.3 / tw)
-        actual_fsize = max(actual_fsize, fsize * 0.6)   # never go below 60 %
-        try:
-            tw = fitz.get_textlength(text, fontname=fname, fontsize=actual_fsize)
-        except Exception:
-            tw = len(text) * actual_fsize * 0.55
 
-    x = (max(bbox.x0, bbox.x1 - tw)  # right-align (prices)
-         if align == "right"
-         else bbox.x0)                # left-align  (labels)
+    if align == "right":
+        # Prices: scale down only if wider than 130 % of the original span
+        bbox_w = max(1.0, bbox.x1 - bbox.x0)
+        if tw > bbox_w * 1.3:
+            actual_fsize = max(fsize * 0.6, fsize * (bbox_w * 1.3 / tw))
+            try:
+                tw = fitz.get_textlength(text, fontname=fname, fontsize=actual_fsize)
+            except Exception:
+                tw = len(text) * actual_fsize * 0.55
+        x = max(bbox.x0, bbox.x1 - tw)
+    else:
+        # Labels: start at left edge, flow right — never shrink the font
+        x = bbox.x0
+
     y = bbox.y0 + actual_fsize * 0.85
 
     page.insert_text((x, y), text, fontname=fname,
