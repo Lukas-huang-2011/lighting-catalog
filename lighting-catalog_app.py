@@ -516,7 +516,7 @@ with st.sidebar:
         "💰 Pricing & Export",
         "📚 Manage Catalogs",
         "🛠️ Debug & Test"
-    ], label_visibility="collapsed")
+    ], label_visibility="collapsed", key="nav_page")
     st.divider()
     client = db.get_client()
     catalogs = db.list_pdfs(client)
@@ -531,7 +531,7 @@ with st.sidebar:
 # Auto-refresh every 2 s while a job is running — uses a JS timer in the
 # browser so Python is never blocked and the UI stays fully responsive.
 if has_active:
-    st_autorefresh(interval=2000, key="job_autorefresh")
+    st_autorefresh(interval=4000, key="job_autorefresh")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -565,7 +565,8 @@ if page == "📤 Upload & Extract":
                 daemon=True,
             )
             t.start()
-            st.success("✅ Extraction started! Navigate to any other page — progress is shown in the sidebar.")
+            # Auto-navigate to Search page so user is free to work
+            st.session_state.nav_page = "🔍 Search by Code"
             st.rerun()
 
 
@@ -605,7 +606,8 @@ elif page == "🔄 Convert Prices":
                 daemon=True,
             )
             t.start()
-            st.success("✅ Conversion started! A download button will appear in the sidebar when done.")
+            # Auto-navigate to Search page so user is free to work
+            st.session_state.nav_page = "🔍 Search by Code"
             st.rerun()
 
 
