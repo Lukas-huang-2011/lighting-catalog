@@ -13,7 +13,7 @@ import time
 import threading
 import uuid as _uuid
 import streamlit as st
-from streamlit_autorefresh import st_autorefresh
+import streamlit.components.v1 as _components
 from PIL import Image
 
 import database as db
@@ -531,7 +531,7 @@ with st.sidebar:
 # Auto-refresh every 2 s while a job is running — uses a JS timer in the
 # browser so Python is never blocked and the UI stays fully responsive.
 if has_active:
-    st_autorefresh(interval=4000, key="job_autorefresh")
+    _components.html("<script>setTimeout(function(){window.location.reload();},4000);</script>", height=0)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
