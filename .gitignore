@@ -21,3 +21,6 @@ __pycache__/
 
 # Logs
 *.log
+
+# Prefixed copies (Desktop only, not for GitHub)
+lighting-catalog_*
