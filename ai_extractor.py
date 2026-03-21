@@ -228,10 +228,15 @@ PROMPT_SECTION = """You are reading a portion of a lighting product catalog or p
 YOUR TASK: Extract EVERY row that has a product code (article number) visible in this image.
 Scan from top to bottom — do NOT stop early.
 WHAT TO EXTRACT:
-1. MAIN product rows — each color/variant row under a product family header
-2. ACCESSORY rows — rows under "Accessories" or "Accessori" sections (they have own codes + prices)
-3. ALL product families visible — if multiple products are shown, extract ALL of them
-4. Every single row with a code = one JSON entry, no exceptions
+1. MAIN product rows — each color/variant row under a product family header (the LAMP itself with its metal structure/frame codes)
+2. COMPONENT/PART rows — separate tables listing replaceable parts like glass diffusers, glass spheres, shades, reflectors, bulbs, etc. with their own codes and prices. These are NOT standalone products — they are components that belong to the main product. Mark ALL of these with is_accessory: true
+3. ACCESSORY rows — rows under "Accessories" or "Accessori" sections (they have own codes + prices). Mark with is_accessory: true
+4. ALL product families visible — if multiple products are shown, extract ALL of them
+5. Every single row with a code = one JSON entry, no exceptions
+COMPONENT vs MAIN PRODUCT RULE:
+- The MAIN PRODUCT is the complete lamp/fixture — usually listed first with codes for different metal finishes/colors
+- If a SEPARATE TABLE below lists individual components (e.g. "Blown glass diffuser" / "Diffusore in vetro soffiato", glass spheres, shades, reflectors) with their own codes and prices, these are COMPONENTS — mark them ALL with is_accessory: true and set their name to the MAIN product family name (not "Brown glass diffuser")
+- Components share the same product_index as their parent main product
 CRITICAL NAME RULE:
 - Product catalogs show a FAMILY NAME in a bold header above rows of variants (e.g. "AVRO Studio Natural", "SPIDER LED", "MARBLE 40")
 - The full name may be 2–4 words — copy it EXACTLY and COMPLETELY (e.g. "AVRO Studio Natural" NOT just "AVRO")
@@ -272,7 +277,7 @@ Fields to include (only when value exists):
 - type: lamp type from the "Type:" spec line — e.g. "pendant", "wall", "ceiling", "floor", "table" — include for ALL rows in that product family if visible; omit if not stated
 - description: short description, mounting type, or accessory use
 - extra_fields: object with any of {ip_rating, dimming, voltage, driver, structure, diffuser, net_weight}
-- is_accessory: true — include ONLY for rows under an "Accessories" / "Accessori" section header; omit this field entirely for main product rows
+- is_accessory: true — mark this for ALL of: (1) rows under "Accessories"/"Accessori" section headers, (2) separate component tables listing glass diffusers, shades, spheres, reflectors, bulbs, or any replaceable part with its own codes/prices. These component parts belong to the main product above them. Use the MAIN product family name (not the component description) as the name. Omit this field for main product rows.
 Return ONLY a valid JSON array. No explanation. No markdown. Include EVERY code row."""
 
 
