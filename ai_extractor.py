@@ -204,6 +204,7 @@ RULES:
 - Find currency from the column HEADER (e.g. "RMBexcl. VAT" → "RMB")
 - OMIT any field that has no value — do NOT write null, just skip the key entirely
 - Keep field values short and factual
+- TABLE OF CONTENTS / INDEX PAGES: If the page shows a list of product names paired with PAGE NUMBERS (not product codes) — like "Avro ... 120", "Grillo ... 85" — this is a TABLE OF CONTENTS or INDEX page. Return []. Page numbers are small plain integers (1-999) with no letters, slashes, or prefixes. Real product codes are alphanumeric (e.g. "21019/DIM/AR", "2344M/2237", "17110V 43"). NEVER extract page numbers as product codes.
 - If no product codes visible (cover, index, pure text page), return []
 - CCT RULE: Values like "2700K", "3000K", "4000K" are color temperatures shown in a CCT column — put them in the `cct` field ONLY, NEVER include them in the `codes` array. Codes are alphanumeric article numbers like "21019/DIM/AR" — they never start with a temperature value
 - If a CCT value (e.g. 2700K) appears next to multiple codes in the same group, apply that cct value to all those codes
@@ -260,6 +261,7 @@ RULES:
 - Find currency from the column HEADER (e.g. "RMBexcl. VAT" → "RMB")
 - OMIT any field that has no value — do NOT write null, just skip the key entirely
 - Keep field values short and factual
+- TABLE OF CONTENTS / INDEX PAGES: If the page shows a list of product names paired with PAGE NUMBERS (not product codes) — like "Avro ... 120", "Grillo ... 85" — this is a TABLE OF CONTENTS or INDEX page. Return []. Page numbers are small plain integers (1-999) with no letters, slashes, or prefixes. Real product codes are alphanumeric (e.g. "21019/DIM/AR", "2344M/2237", "17110V 43"). NEVER extract page numbers as product codes.
 - If no product codes visible (cover, index, pure text page), return []
 - CCT RULE: Values like "2700K", "3000K", "4000K" are color temperatures shown in a CCT column — put them in the `cct` field ONLY, NEVER include them in the `codes` array. Codes are alphanumeric article numbers like "21019/DIM/AR" — they never start with a temperature value
 - If a CCT value (e.g. 2700K) appears next to multiple codes in the same group, apply that cct value to all those codes
