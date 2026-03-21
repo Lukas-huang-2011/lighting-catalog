@@ -508,7 +508,7 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
     st.divider()
-    page = st.radio("Navigation", [
+    _nav_options = [
         "📤 Upload & Extract",
         "🔄 Convert Prices",
         "🔍 Search by Code",
@@ -516,7 +516,15 @@ with st.sidebar:
         "💰 Pricing & Export",
         "📚 Manage Catalogs",
         "🛠️ Debug & Test"
-    ], label_visibility="collapsed", key="nav_page")
+    ]
+    _nav_idx = 0
+    if st.session_state.get("_redirect"):
+        try:
+            _nav_idx = _nav_options.index(st.session_state._redirect)
+        except ValueError:
+            _nav_idx = 0
+        del st.session_state._redirect
+    page = st.radio("Navigation", _nav_options, index=_nav_idx, label_visibility="collapsed")
     st.divider()
     client = db.get_client()
     catalogs = db.list_pdfs(client)
@@ -566,7 +574,7 @@ if page == "📤 Upload & Extract":
             )
             t.start()
             # Auto-navigate to Search page so user is free to work
-            st.session_state.nav_page = "🔍 Search by Code"
+            st.session_state._redirect = "🔍 Search by Code"
             st.rerun()
 
 
@@ -607,7 +615,7 @@ elif page == "🔄 Convert Prices":
             )
             t.start()
             # Auto-navigate to Search page so user is free to work
-            st.session_state.nav_page = "🔍 Search by Code"
+            st.session_state._redirect = "🔍 Search by Code"
             st.rerun()
 
 
