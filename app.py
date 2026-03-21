@@ -392,7 +392,7 @@ hr, [data-testid="stDivider"] { border-color: #1e1e1e !important; }
   padding:28px 0 16px; gap:10px; cursor:default; user-select:none;
 }
 .rd-mark {
-  width:116px; height:36px;
+  width:160px; height:45px;
   animation: rd-breathe 3.5s ease-in-out infinite;
   display:block;
 }
@@ -497,12 +497,21 @@ _ensure_jobs()
 with st.sidebar:
     st.markdown("""
     <div class="rd-logo">
-      <svg class="rd-mark" viewBox="0 0 116 36" xmlns="http://www.w3.org/2000/svg">
-        <text x="58" y="28" text-anchor="middle"
-              font-family="Georgia,Times New Roman,serif"
-              font-size="30" font-weight="300"
-              fill="none" stroke="#ffffff" stroke-width="1.2"
-              letter-spacing="3">qqodd</text>
+      <svg class="rd-mark" viewBox="0 0 200 50" xmlns="http://www.w3.org/2000/svg">
+        <!-- q -->
+        <path d="M18,25 A13,13 0 1,1 18,24.9 Z M18,14 A11,11 0 1,0 18,13.9 Z" fill="#fff"/>
+        <rect x="27" y="30" width="4" height="14" fill="#fff"/>
+        <!-- q -->
+        <path d="M56,25 A13,13 0 1,1 56,24.9 Z M56,14 A11,11 0 1,0 56,13.9 Z" fill="#fff"/>
+        <rect x="65" y="30" width="4" height="14" fill="#fff"/>
+        <!-- o -->
+        <path d="M94,25 A13,13 0 1,1 94,24.9 Z M94,14 A11,11 0 1,0 94,13.9 Z" fill="#fff"/>
+        <!-- d -->
+        <path d="M127,25 A13,13 0 1,1 127,24.9 Z M127,14 A11,11 0 1,0 127,13.9 Z" fill="#fff"/>
+        <rect x="136" y="2" width="4" height="36" fill="#fff"/>
+        <!-- d -->
+        <path d="M160,25 A13,13 0 1,1 160,24.9 Z M160,14 A11,11 0 1,0 160,13.9 Z" fill="#fff"/>
+        <rect x="169" y="2" width="4" height="36" fill="#fff"/>
       </svg>
       <div class="rd-name">柒点</div>
     </div>
