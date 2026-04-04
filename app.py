@@ -13,7 +13,6 @@ import time
 import threading
 import uuid as _uuid
 import streamlit as st
-import streamlit.components.v1 as _components
 from PIL import Image
 
 import database as db
@@ -542,14 +541,21 @@ with st.sidebar:
         "📚 Manage Catalogs",
         "🛠️ Debug & Test"
     ]
-    _nav_idx = 0
+    # Store the active page in session_state so auto-refresh reruns never
+    # reset the radio back to index 0. Redirect requests write here too.
+    if "current_page" not in st.session_state:
+        st.session_state.current_page = _nav_options[0]
     if st.session_state.get("_redirect"):
-        try:
-            _nav_idx = _nav_options.index(st.session_state._redirect)
-        except ValueError:
-            _nav_idx = 0
+        if st.session_state._redirect in _nav_options:
+            st.session_state.current_page = st.session_state._redirect
         del st.session_state._redirect
-    page = st.radio("Navigation", _nav_options, index=_nav_idx, label_visibility="collapsed")
+    page = st.radio(
+        "Navigation", _nav_options,
+        index=_nav_options.index(st.session_state.current_page),
+        key="nav_radio",
+        label_visibility="collapsed",
+    )
+    st.session_state.current_page = page
     st.divider()
     client = db.get_client()
     catalogs = db.list_pdfs(client)
@@ -561,16 +567,12 @@ with st.sidebar:
     # ── Live job status — visible on every page ────────────────────────────
     has_active = _render_jobs_sidebar(st.session_state.jobs)
 
-# Auto-refresh every 1.5 s while a job is running.
-# Uses window.parent.location.reload() — the component runs inside an iframe,
-# so window.location would only reload the iframe itself (invisible, does
-# nothing). window.parent reaches the actual Streamlit page.
-# JS-based refresh keeps the Python thread free, so navigation still works.
+# Auto-refresh while a job is active. st.rerun() stays within the same
+# session so nothing is lost. The page stored in session_state.current_page
+# ensures the radio selection is preserved across every rerun.
 if has_active:
-    _components.html(
-        "<script>setTimeout(function(){window.parent.location.reload();},1500);</script>",
-        height=0,
-    )
+    time.sleep(0.5)
+    st.rerun()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
