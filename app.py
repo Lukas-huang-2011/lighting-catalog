@@ -13,7 +13,6 @@ import time
 import threading
 import uuid as _uuid
 import streamlit as st
-import streamlit.components.v1 as _components
 from PIL import Image
 
 import database as db
@@ -46,6 +45,7 @@ def _new_job(job_type: str, filename: str) -> str:
         "result_filename": None,
         "error":           None,
         "ts":              time.time(),
+        "cancel":          False,
     }
     return job_id
 
@@ -64,6 +64,10 @@ def _bg_extract(jobs, job_id, pdf_bytes, filename, page_count, dpi, extract_imgs
         total  = 0
         errors = []
         for page_num, page_img in enumerate(pdf.render_pages(pdf_bytes, dpi=dpi)):
+            if jobs[job_id].get("cancel"):
+                jobs[job_id]["status"]  = "error"
+                jobs[job_id]["message"] = "⛔ Cancelled"
+                return
             jobs[job_id]["progress"] = (page_num + 1) / page_count
             jobs[job_id]["message"]  = f"Page {page_num + 1} / {page_count}"
 
@@ -122,7 +126,13 @@ def _bg_convert(jobs, job_id, pdf_bytes, filename, from_sym, multiplier, to_sym)
     try:
         jobs[job_id]["status"]  = "running"
         jobs[job_id]["message"] = "Converting prices…"
-        result = pdf.convert_prices(pdf_bytes, from_sym, multiplier, to_sym)
+
+        def _cb(pct, msg):
+            jobs[job_id]["progress"] = pct
+            jobs[job_id]["message"]  = msg
+
+        result = pdf.convert_prices(pdf_bytes, from_sym, multiplier, to_sym,
+                                    progress_cb=_cb)
         jobs[job_id]["status"]          = "done"
         jobs[job_id]["progress"]        = 1.0
         jobs[job_id]["message"]         = "✅ Done — download ready"
@@ -151,6 +161,11 @@ def _render_jobs_sidebar(jobs: dict) -> bool:
             active = True
             st.caption(f"🔄 **{label}** · {short}")
             st.progress(job["progress"], text=job["message"])
+            if st.button("⛔ Cancel", key=f"cancel_{job['id']}", use_container_width=True):
+                job["cancel"] = True
+                job["status"]  = "error"
+                job["message"] = "⛔ Cancelling…"
+                st.rerun()
         elif status == "done":
             st.caption(f"✅ **{label}** · {short}")
             st.caption(job["message"])
@@ -545,10 +560,13 @@ with st.sidebar:
     # ── Live job status — visible on every page ────────────────────────────
     has_active = _render_jobs_sidebar(st.session_state.jobs)
 
-# Auto-refresh every 2 s while a job is running — uses a JS timer in the
-# browser so Python is never blocked and the UI stays fully responsive.
+# While a job is running, sleep briefly then rerun so the progress bar
+# refreshes automatically — no browser JS or user clicks needed.
+# Using Python-side sleep+rerun is more reliable than JS timers, which
+# browsers throttle or freeze when the tab is in the background.
 if has_active:
-    _components.html("<script>setTimeout(function(){window.location.reload();},4000);</script>", height=0)
+    time.sleep(1)
+    st.rerun()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
