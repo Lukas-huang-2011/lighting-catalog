@@ -619,6 +619,80 @@ def _insert_fitted(page, bbox, text: str, fsize: float, rgb: tuple,
                      fontsize=actual_fsize, color=rgb)
 
 
+def _merge_adjacent_label_price(redactions: list, tc: str) -> list:
+    """
+    Post-processing pass: find (standalone-label, standalone-price) pairs
+    that are on the same visual row and horizontally adjacent, then merge
+    them into a single combined redaction so the new symbol and number are
+    inserted as one string and can never overlap each other.
+
+    This catches cases where the currency glyph and the price number live in
+    completely separate rawdict blocks (not just different spans/lines), which
+    the earlier line-level Tier-A pass cannot see.
+
+    Adjacency rule: the horizontal gap between the two bboxes is ≤ 20 pt
+    (covers normal inter-character spacing and small whitespace gaps).
+    Y-overlap of at least 50 % of the shorter box height confirms same row.
+    """
+    # Separate labels from prices by their alignment tag
+    label_indices = [i for i, r in enumerate(redactions)
+                     if r[5] == "left" and r[1] == tc]
+    price_indices = [i for i, r in enumerate(redactions) if r[5] == "right"]
+
+    used: set = set()
+    merged: list = []
+
+    for li in label_indices:
+        if li in used:
+            continue
+        l_bbox, l_text, l_fsize, l_rgb, l_font, _ = redactions[li]
+
+        best = None          # (gap, pi, order)
+        for pi in price_indices:
+            if pi in used:
+                continue
+            p_bbox, p_text, p_fsize, p_rgb, p_font, _ = redactions[pi]
+
+            # Same visual row: y-ranges must overlap by ≥ 50 % of shorter height
+            l_h = l_bbox.y1 - l_bbox.y0
+            p_h = p_bbox.y1 - p_bbox.y0
+            overlap_y = min(l_bbox.y1, p_bbox.y1) - max(l_bbox.y0, p_bbox.y0)
+            if overlap_y < 0.5 * min(l_h, p_h):
+                continue
+
+            gap_lp = p_bbox.x0 - l_bbox.x1   # label left of price
+            gap_pl = l_bbox.x0 - p_bbox.x1   # price left of label
+
+            if -5 <= gap_lp <= 20:
+                if best is None or abs(gap_lp) < abs(best[0]):
+                    best = (gap_lp, pi, "label_first")
+            elif -5 <= gap_pl <= 20:
+                if best is None or abs(gap_pl) < abs(best[0]):
+                    best = (gap_pl, pi, "price_first")
+
+        if best is not None:
+            _, pi, order = best
+            p_bbox, p_text, p_fsize, p_rgb, p_font, _ = redactions[pi]
+            if order == "label_first":
+                m_bbox = fitz.Rect(l_bbox.x0, min(l_bbox.y0, p_bbox.y0),
+                                   p_bbox.x1, max(l_bbox.y1, p_bbox.y1))
+                m_text = l_text + p_text
+            else:
+                m_bbox = fitz.Rect(p_bbox.x0, min(l_bbox.y0, p_bbox.y0),
+                                   l_bbox.x1, max(l_bbox.y1, p_bbox.y1))
+                m_text = p_text + l_text
+            merged.append((m_bbox, m_text, p_fsize, p_rgb, p_font, "left"))
+            used.add(li)
+            used.add(pi)
+
+    # Keep everything that wasn't merged
+    for i, r in enumerate(redactions):
+        if i not in used:
+            merged.append(r)
+
+    return merged
+
+
 def _chars_bbox(chars: list, start: int, end: int):
     """
     Return a fitz.Rect covering chars[start:end], or None if no valid bboxes.
@@ -893,6 +967,11 @@ def convert_prices(pdf_bytes: bytes, from_currency: str, multiplier: float,
 
         if not redactions:
             continue
+
+        # Merge any (label, price) pairs that ended up as separate redactions
+        # because the currency glyph and the number were in different rawdict
+        # blocks — the earlier line-level pass couldn't see them together.
+        redactions = _merge_adjacent_label_price(redactions, tc)
 
         # 1. Whiteout — expand each box by 1 pt to guarantee full coverage
         for bbox, *_ in redactions:
