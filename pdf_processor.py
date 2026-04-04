@@ -729,22 +729,94 @@ def convert_prices(pdf_bytes: bytes, from_currency: str, multiplier: float,
                 line_spans = line.get("spans", [])
                 if not line_spans:
                     continue
-                line_text = "".join(s.get("text", "") for s in line_spans)
+
+                # Build full line text and a map: line_pos → (span, local_pos)
+                line_text  = ""
+                span_map   = []   # (line_start, line_end, span)
+                for sp in line_spans:
+                    t = sp.get("text", "")
+                    span_map.append((len(line_text), len(line_text) + len(t), sp))
+                    line_text += t
+
                 line_has_currency = bool(pat_label.search(line_text))
 
-                for span in line_spans:
+                # LINE-LEVEL claimed set (positions in line_text)
+                line_claimed: set = set()
+
+                # Helper: merged bbox for a range of line_text positions
+                def _line_bbox(lstart, lend):
+                    rects = []
+                    for sm_s, sm_e, sp in span_map:
+                        if sm_e <= lstart or sm_s >= lend:
+                            continue
+                        loc_s = max(0, lstart - sm_s)
+                        loc_e = min(sm_e - sm_s, lend - sm_s)
+                        sp_text = sp.get("text", "")
+                        sp_bbox = sp.get("bbox", None)
+                        b = _chars_bbox(sp.get("chars", []), loc_s, loc_e)
+                        if b is None and sp_bbox:
+                            b = _span_substr_bbox(sp_bbox, sp_text, loc_s, loc_e)
+                        if b is not None:
+                            rects.append(b)
+                    if not rects:
+                        return None
+                    r = rects[0]
+                    for x in rects[1:]:
+                        r |= x
+                    return r
+
+                # Helper: style (fsize, rgb, fontname) of the span at line pos
+                def _style_at(lpos):
+                    for sm_s, sm_e, sp in span_map:
+                        if sm_s <= lpos < sm_e:
+                            fz = sp.get("size", 10)
+                            fl = sp.get("flags", 0)
+                            co = sp.get("color", 0)
+                            return (fz,
+                                    ((co >> 16 & 255) / 255,
+                                     (co >>  8 & 255) / 255,
+                                     (co       & 255) / 255),
+                                    _pick_fontname(fl))
+                    return 10, (0, 0, 0), "Helvetica"
+
+                # ── A: combined currency+price — run on FULL LINE TEXT ────────
+                # This catches cross-span pairs like [span:"€"][span:"149,00"].
+                for pat, order in (
+                    (pat_pfx_dec,  "prefix"),
+                    (pat_sfx_dec,  "suffix"),
+                    (pat_pfx_bare, "prefix"),
+                    (pat_sfx_bare, "suffix"),
+                ):
+                    for m in pat.finditer(line_text):
+                        if any(i in line_claimed for i in range(m.start(), m.end())):
+                            continue
+                        parsed = _parse_price(m.group(1))
+                        if parsed is None or parsed < 1:
+                            continue
+                        bbox = _line_bbox(m.start(), m.end())
+                        if bbox is None:
+                            continue
+                        fsize, rgb, fontname = _style_at(m.start())
+                        new_price = _format_price_num(parsed * multiplier)
+                        new_text  = (tc + new_price) if order == "prefix" \
+                                    else (new_price + tc)
+                        line_claimed.update(range(m.start(), m.end()))
+                        redactions.append((bbox, new_text, fsize, rgb, fontname, "left"))
+
+                # ── B / C / D: span-level tiers for remaining positions ────────
+                for sm_start, sm_end, span in span_map:
                     span_text = span.get("text", "")
                     if not span_text:
                         continue
 
-                    chars    = span.get("chars", [])
-                    fsize    = span.get("size", 10)
-                    flags    = span.get("flags", 0)
-                    c        = span.get("color", 0)
-                    rgb      = ((c >> 16 & 255) / 255,
-                                (c >>  8 & 255) / 255,
-                                (c       & 255) / 255)
-                    fontname = _pick_fontname(flags)
+                    chars     = span.get("chars", [])
+                    fsize     = span.get("size", 10)
+                    flags     = span.get("flags", 0)
+                    c         = span.get("color", 0)
+                    rgb       = ((c >> 16 & 255) / 255,
+                                 (c >>  8 & 255) / 255,
+                                 (c       & 255) / 255)
+                    fontname  = _pick_fontname(flags)
                     span_bbox = span.get("bbox", None)
 
                     span_in_col = False
@@ -756,36 +828,10 @@ def convert_prices(pdf_bytes: bytes, from_currency: str, multiplier: float,
                                 span_in_col = True
                                 break
 
-                    claimed: set = set()
-
-                    # ── A: combined currency+price units ─────────────────────
-                    for pat, order in (
-                        (pat_pfx_dec,  "prefix"),
-                        (pat_sfx_dec,  "suffix"),
-                        (pat_pfx_bare, "prefix"),
-                        (pat_sfx_bare, "suffix"),
-                    ):
-                        for m in pat.finditer(span_text):
-                            if any(i in claimed for i in range(m.start(), m.end())):
-                                continue
-                            price_str = m.group(1)
-                            parsed = _parse_price(price_str)
-                            if parsed is None or parsed < 1:
-                                continue
-                            bbox = _get_bbox(chars, span_bbox, span_text,
-                                             m.start(), m.end())
-                            if bbox is None:
-                                continue
-                            new_price = _format_price_num(parsed * multiplier)
-                            new_text  = (tc + new_price) if order == "prefix" \
-                                        else (new_price + tc)
-                            claimed.update(range(m.start(), m.end()))
-                            redactions.append(
-                                (bbox, new_text, fsize, rgb, fontname, "left"))
-
-                    # ── B: standalone decimal prices ──────────────────────────
+                    # B: standalone decimal prices
                     for m in pat_price.finditer(span_text):
-                        if any(i in claimed for i in range(m.start(), m.end())):
+                        lstart, lend = sm_start + m.start(), sm_start + m.end()
+                        if any(i in line_claimed for i in range(lstart, lend)):
                             continue
                         parsed = _parse_price(m.group())
                         if parsed is None or parsed < 1:
@@ -794,15 +840,16 @@ def convert_prices(pdf_bytes: bytes, from_currency: str, multiplier: float,
                                          m.start(), m.end())
                         if bbox is None:
                             continue
-                        claimed.update(range(m.start(), m.end()))
+                        line_claimed.update(range(lstart, lend))
                         redactions.append(
                             (bbox, _format_price_num(parsed * multiplier),
                              fsize, rgb, fontname, "right"))
 
-                    # ── C: bare integers in price context ─────────────────────
+                    # C: bare integers in price context
                     if span_in_col or line_has_currency:
                         for m in pat_bare.finditer(span_text):
-                            if any(i in claimed for i in range(m.start(), m.end())):
+                            lstart, lend = sm_start + m.start(), sm_start + m.end()
+                            if any(i in line_claimed for i in range(lstart, lend)):
                                 continue
                             parsed = _parse_price(m.group())
                             if parsed is None or parsed < 1:
@@ -811,19 +858,21 @@ def convert_prices(pdf_bytes: bytes, from_currency: str, multiplier: float,
                                              m.start(), m.end())
                             if bbox is None:
                                 continue
-                            claimed.update(range(m.start(), m.end()))
+                            line_claimed.update(range(lstart, lend))
                             redactions.append(
                                 (bbox, _format_price_num(parsed * multiplier),
                                  fsize, rgb, fontname, "right"))
 
-                    # ── D: standalone currency labels ─────────────────────────
+                    # D: standalone currency labels
                     for m in pat_label.finditer(span_text):
-                        if any(i in claimed for i in range(m.start(), m.end())):
+                        lstart, lend = sm_start + m.start(), sm_start + m.end()
+                        if any(i in line_claimed for i in range(lstart, lend)):
                             continue
                         bbox = _get_bbox(chars, span_bbox, span_text,
                                          m.start(), m.end())
                         if bbox is None:
                             continue
+                        line_claimed.update(range(lstart, lend))
                         redactions.append(
                             (bbox, tc, fsize, rgb, fontname, "left"))
 
