@@ -574,16 +574,18 @@ def _pick_fontname(flags: int) -> str:
 def _insert_fitted(page, bbox, text: str, fsize: float, rgb: tuple,
                    fontname: str, align: str = "right") -> None:
     """
-    Insert `text` near `bbox`.
+    Insert `text` near `bbox`, matching the original colour and staying as
+    close to the original font size as possible.
 
-    Prices  (align='right'): right-aligned within the bbox, font scaled down
-            if the converted number is wider than the original (max 30 % wider).
-    Labels  (align='left'):  left-aligned at bbox.x0, NO scaling — labels are
-            allowed to flow into the white space to their right.  The original
-            bbox may be just a few pixels (e.g. a lone '€' glyph), so forcing
-            the replacement to fit inside it would make it microscopic.
+    Scaling rules:
+      • Try to fit within the bbox at the original font size.
+      • If text is wider than the bbox, scale down proportionally — but never
+        below 70 % of the original size or 7 pt, whichever is larger.
+        It is better to overflow slightly than to be unreadable.
+      • align='right'  — right-align prices inside the bbox.
+      • align='left'   — left-align labels; they may flow into whitespace
+                         on their right (original currency bbox can be tiny).
     """
-    # Resolve the font, falling back gracefully
     fname = "helv"
     for attempt_font in (fontname, "Helvetica", "helv"):
         try:
@@ -593,27 +595,24 @@ def _insert_fitted(page, bbox, text: str, fsize: float, rgb: tuple,
         except Exception:
             continue
 
-    try:
-        tw = fitz.get_textlength(text, fontname=fname, fontsize=fsize)
-    except Exception:
-        tw = len(text) * fsize * 0.55
+    def _tw(fs):
+        try:
+            return fitz.get_textlength(text, fontname=fname, fontsize=fs)
+        except Exception:
+            return len(text) * fs * 0.55
 
+    bbox_w = max(1.0, bbox.x1 - bbox.x0)
+    tw = _tw(fsize)
     actual_fsize = fsize
 
-    if align == "right":
-        # Prices: scale down only if wider than 130 % of the original span
-        bbox_w = max(1.0, bbox.x1 - bbox.x0)
-        if tw > bbox_w * 1.3:
-            actual_fsize = max(fsize * 0.6, fsize * (bbox_w * 1.3 / tw))
-            try:
-                tw = fitz.get_textlength(text, fontname=fname, fontsize=actual_fsize)
-            except Exception:
-                tw = len(text) * actual_fsize * 0.55
-        x = max(bbox.x0, bbox.x1 - tw)
-    else:
-        # Labels: start at left edge, flow right — never shrink the font
-        x = bbox.x0
+    if align == "right" and tw > bbox_w:
+        # Scale so text fits; never go below 70 % of original or 7 pt
+        min_fsize = max(fsize * 0.7, 7.0)
+        scaled = fsize * (bbox_w / tw)
+        actual_fsize = max(scaled, min_fsize)
+        tw = _tw(actual_fsize)
 
+    x = max(bbox.x0, bbox.x1 - tw) if align == "right" else bbox.x0
     y = bbox.y0 + actual_fsize * 0.85
 
     page.insert_text((x, y), text, fontname=fname,
@@ -658,60 +657,70 @@ def _span_substr_bbox(span_bbox, span_text: str, start: int, end: int):
 
 
 def convert_prices(pdf_bytes: bytes, from_currency: str, multiplier: float,
-                   to_currency: str) -> bytes:
+                   to_currency: str, progress_cb=None) -> bytes:
     """
     Convert every price in a PDF from one currency to another and replace the
-    currency label/symbol itself.
+    currency label/symbol.
 
-    Three tiers of price detection, applied to every page:
+    Detection tiers (applied per span, in order; each position claimed once):
 
-    Tier 1 — Decimal prices (always active)
-        Numbers with exactly 2 decimal places anywhere on the page:
-        1.188,00 | 335,00 | 1.234,56 | 149.00
+    A  Combined unit  — currency + price or price + currency as a SINGLE match.
+       Redacted and reinserted as one string so label and number never overlap.
+       Handles both decimal prices (149,00) and bare integers (149).
+         Prefix:  €149,00  →  ¥19,37    |  €149  →  ¥19,37
+         Suffix:  149,00€  →  19,37¥    |  149€  →  19,37¥
 
-    Tier 2 — Bare integers / thousands-only numbers in price columns (table mode)
-        When a column header contains the currency marker (e.g. "€", "EUR",
-        "PRICE EUR"), every bare number vertically below that header is treated
-        as a price: 149 | 1234 | 14.469  (European thousands separator).
-        Numbers followed by a unit letter (W, K, V, A, m, %, …) are skipped.
+    B  Standalone decimal price  — 1.188,00 | 335,00 | 1.234,56
+       Right-aligned replacement in the original number's bbox.
 
-    Tier 3 — Bare integers on the same line as a currency symbol
-        If the currency marker appears somewhere on the same text line, bare
-        integers on that line are also converted (handles "€ 149" split-span).
+    C  Standalone bare integer / thousands number in price context
+       (span is in a currency-header column, or the line contains the currency)
+       149 | 1.234 → converted.  Skipped if followed by unit letter (W/K/V/A/%).
 
-    Currency labels/symbols are replaced with `to_currency` throughout.
+    D  Standalone currency label  — any remaining occurrence of the marker.
+
+    Redaction boxes are expanded by 1 pt each side to guarantee full coverage.
+    Replacement text always uses the original span's colour and font.
     """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     fc  = from_currency.strip()
     tc  = to_currency.strip()
     esc = re.escape(fc)
+    n_pages = len(doc)
 
     fc_is_symbol = len(fc) <= 2 and not fc.isalpha()
 
-    # Tier-1: prices with exactly 2 decimal places
-    pat_price = re.compile(
-        r"\d{1,3}(?:[.,]\d{3})*[.,]\d{2}|\d+[.,]\d{2}"
-    )
-    # Tier-2/3: bare integers or European-thousands numbers (no decimal part).
-    # Requires ≥ 2 digits, must NOT be followed by a unit letter / another
-    # digit / decimal separator + digit  (so "149W", "3000K", "50.5" are safe).
-    pat_bare = re.compile(
-        r"(?<![.\d])(?:\d{1,3}(?:\.\d{3})+|\d{2,6})(?!\d|[.,]\d|[A-Za-z°%])"
-    )
-    # Currency label/symbol
+    # ── Patterns ─────────────────────────────────────────────────────────────
+    _DEC  = r"\d{1,3}(?:[.,]\d{3})*[.,]\d{2}|\d+[.,]\d{2}"
+    _BARE = r"(?:\d{1,3}(?:\.\d{3})+|\d{2,6})"
+
+    # A: combined units (group 1 always captures the numeric part)
+    pat_pfx_dec  = re.compile(esc + r"\s*(" + _DEC  + r")",                             re.IGNORECASE)
+    pat_sfx_dec  = re.compile(r"(" + _DEC  + r")\s*" + esc,                             re.IGNORECASE)
+    pat_pfx_bare = re.compile(esc + r"\s*(" + _BARE + r")(?!\d|[.,]\d|[A-Za-z°%])",    re.IGNORECASE)
+    pat_sfx_bare = re.compile(r"(?<![.\d])(" + _BARE + r")(?!\d|[.,]\d|[A-Za-z°%])\s*" + esc, re.IGNORECASE)
+    # B: standalone decimal
+    pat_price = re.compile(_DEC)
+    # C: standalone bare
+    pat_bare  = re.compile(r"(?<![.\d])" + _BARE + r"(?!\d|[.,]\d|[A-Za-z°%])")
+    # D: standalone label
     pat_label = re.compile(esc, re.IGNORECASE)
 
-    for page in doc:
-        page_text = page.get_text()
+    def _get_bbox(chars, span_bbox, span_text, start, end):
+        b = _chars_bbox(chars, start, end)
+        if b is None and span_bbox:
+            b = _span_substr_bbox(span_bbox, span_text, start, end)
+        return b
 
-        # Skip pages with no trace of the currency (word labels only;
-        # symbols are tried on every page due to possible encoding issues)
+    for page_idx, page in enumerate(doc):
+        if progress_cb:
+            progress_cb(page_idx / n_pages, f"Page {page_idx + 1} / {n_pages}")
+
+        page_text = page.get_text()
         if not fc_is_symbol and fc.upper() not in page_text.upper():
             continue
 
-        # Find price-column headers (Tier 2)
         price_cols = _find_price_column_headers(page, fc)
-
         raw        = page.get_text("rawdict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
         redactions = []   # (bbox, new_text, fsize, rgb, fontname, align)
 
@@ -720,8 +729,6 @@ def convert_prices(pdf_bytes: bytes, from_currency: str, multiplier: float,
                 line_spans = line.get("spans", [])
                 if not line_spans:
                     continue
-
-                # Does this line contain the currency marker? (Tier 3 trigger)
                 line_text = "".join(s.get("text", "") for s in line_spans)
                 line_has_currency = bool(pat_label.search(line_text))
 
@@ -730,17 +737,16 @@ def convert_prices(pdf_bytes: bytes, from_currency: str, multiplier: float,
                     if not span_text:
                         continue
 
-                    chars     = span.get("chars", [])
-                    fsize     = span.get("size", 10)
-                    flags     = span.get("flags", 0)
-                    c         = span.get("color", 0)
-                    rgb       = ((c >> 16 & 255) / 255,
-                                 (c >>  8 & 255) / 255,
-                                 (c       & 255) / 255)
-                    fontname  = _pick_fontname(flags)
+                    chars    = span.get("chars", [])
+                    fsize    = span.get("size", 10)
+                    flags    = span.get("flags", 0)
+                    c        = span.get("color", 0)
+                    rgb      = ((c >> 16 & 255) / 255,
+                                (c >>  8 & 255) / 255,
+                                (c       & 255) / 255)
+                    fontname = _pick_fontname(flags)
                     span_bbox = span.get("bbox", None)
 
-                    # Is this span vertically inside a price column? (Tier 2)
                     span_in_col = False
                     if span_bbox and price_cols:
                         sx = (span_bbox[0] + span_bbox[2]) / 2
@@ -750,53 +756,78 @@ def convert_prices(pdf_bytes: bytes, from_currency: str, multiplier: float,
                                 span_in_col = True
                                 break
 
-                    # ── Tier 1: decimal prices ────────────────────────────────
-                    already: set = set()   # character positions already claimed
+                    claimed: set = set()
+
+                    # ── A: combined currency+price units ─────────────────────
+                    for pat, order in (
+                        (pat_pfx_dec,  "prefix"),
+                        (pat_sfx_dec,  "suffix"),
+                        (pat_pfx_bare, "prefix"),
+                        (pat_sfx_bare, "suffix"),
+                    ):
+                        for m in pat.finditer(span_text):
+                            if any(i in claimed for i in range(m.start(), m.end())):
+                                continue
+                            price_str = m.group(1)
+                            parsed = _parse_price(price_str)
+                            if parsed is None or parsed < 1:
+                                continue
+                            bbox = _get_bbox(chars, span_bbox, span_text,
+                                             m.start(), m.end())
+                            if bbox is None:
+                                continue
+                            new_price = _format_price_num(parsed * multiplier)
+                            new_text  = (tc + new_price) if order == "prefix" \
+                                        else (new_price + tc)
+                            claimed.update(range(m.start(), m.end()))
+                            redactions.append(
+                                (bbox, new_text, fsize, rgb, fontname, "left"))
+
+                    # ── B: standalone decimal prices ──────────────────────────
                     for m in pat_price.finditer(span_text):
+                        if any(i in claimed for i in range(m.start(), m.end())):
+                            continue
                         parsed = _parse_price(m.group())
                         if parsed is None or parsed < 1:
                             continue
-                        bbox = _chars_bbox(chars, m.start(), m.end())
-                        if bbox is None and span_bbox:
-                            bbox = _span_substr_bbox(span_bbox, span_text,
-                                                     m.start(), m.end())
+                        bbox = _get_bbox(chars, span_bbox, span_text,
+                                         m.start(), m.end())
                         if bbox is None:
                             continue
-                        already.update(range(m.start(), m.end()))
+                        claimed.update(range(m.start(), m.end()))
                         redactions.append(
                             (bbox, _format_price_num(parsed * multiplier),
                              fsize, rgb, fontname, "right"))
 
-                    # ── Tier 2 / 3: bare integers in price context ────────────
+                    # ── C: bare integers in price context ─────────────────────
                     if span_in_col or line_has_currency:
                         for m in pat_bare.finditer(span_text):
-                            # Skip ranges already covered by a decimal price
-                            if any(i in already for i in range(m.start(), m.end())):
+                            if any(i in claimed for i in range(m.start(), m.end())):
                                 continue
                             parsed = _parse_price(m.group())
                             if parsed is None or parsed < 1:
                                 continue
-                            bbox = _chars_bbox(chars, m.start(), m.end())
-                            if bbox is None and span_bbox:
-                                bbox = _span_substr_bbox(span_bbox, span_text,
-                                                         m.start(), m.end())
+                            bbox = _get_bbox(chars, span_bbox, span_text,
+                                             m.start(), m.end())
                             if bbox is None:
                                 continue
+                            claimed.update(range(m.start(), m.end()))
                             redactions.append(
                                 (bbox, _format_price_num(parsed * multiplier),
                                  fsize, rgb, fontname, "right"))
 
-                    # ── Currency label / symbol replacement ───────────────────
+                    # ── D: standalone currency labels ─────────────────────────
                     for m in pat_label.finditer(span_text):
-                        bbox = _chars_bbox(chars, m.start(), m.end())
-                        if bbox is None and span_bbox:
-                            bbox = _span_substr_bbox(span_bbox, span_text,
-                                                     m.start(), m.end())
+                        if any(i in claimed for i in range(m.start(), m.end())):
+                            continue
+                        bbox = _get_bbox(chars, span_bbox, span_text,
+                                         m.start(), m.end())
                         if bbox is None:
                             continue
-                        redactions.append((bbox, tc, fsize, rgb, fontname, "left"))
+                        redactions.append(
+                            (bbox, tc, fsize, rgb, fontname, "left"))
 
-        # ── Fallback: page.search_for() if rawdict found nothing ─────────────
+        # ── Fallback: page.search_for() ───────────────────────────────────────
         if not redactions:
             for m in pat_price.finditer(page_text):
                 parsed = _parse_price(m.group())
@@ -808,19 +839,24 @@ def convert_prices(pdf_bytes: bytes, from_currency: str, multiplier: float,
                          10, (0, 0, 0), "Helvetica", "right"))
             for m in pat_label.finditer(page_text):
                 for bbox in page.search_for(m.group(), quads=False):
-                    redactions.append((bbox, tc, 10, (0, 0, 0), "Helvetica", "left"))
+                    redactions.append(
+                        (bbox, tc, 10, (0, 0, 0), "Helvetica", "left"))
 
         if not redactions:
             continue
 
-        # 1. Whiteout all original character regions
+        # 1. Whiteout — expand each box by 1 pt to guarantee full coverage
         for bbox, *_ in redactions:
-            page.add_redact_annot(bbox, fill=(1, 1, 1))
+            pad = fitz.Rect(bbox.x0 - 1, bbox.y0 - 1, bbox.x1 + 1, bbox.y1 + 1)
+            page.add_redact_annot(pad, fill=(1, 1, 1))
         page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
 
-        # 2. Insert converted text at the same positions
+        # 2. Insert converted text
         for bbox, new_text, fsize, rgb, fontname, align in redactions:
             _insert_fitted(page, bbox, new_text, fsize, rgb, fontname, align=align)
+
+    if progress_cb:
+        progress_cb(1.0, "Finalizing…")
 
     buf = io.BytesIO()
     doc.save(buf, garbage=4, deflate=True)
