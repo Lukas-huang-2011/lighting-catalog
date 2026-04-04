@@ -13,6 +13,7 @@ import time
 import threading
 import uuid as _uuid
 import streamlit as st
+import streamlit.components.v1 as _components
 from PIL import Image
 
 import database as db
@@ -560,13 +561,16 @@ with st.sidebar:
     # ── Live job status — visible on every page ────────────────────────────
     has_active = _render_jobs_sidebar(st.session_state.jobs)
 
-# While a job is running, sleep briefly then rerun so the progress bar
-# refreshes automatically — no browser JS or user clicks needed.
-# Using Python-side sleep+rerun is more reliable than JS timers, which
-# browsers throttle or freeze when the tab is in the background.
+# Auto-refresh every 1.5 s while a job is running.
+# Uses window.parent.location.reload() — the component runs inside an iframe,
+# so window.location would only reload the iframe itself (invisible, does
+# nothing). window.parent reaches the actual Streamlit page.
+# JS-based refresh keeps the Python thread free, so navigation still works.
 if has_active:
-    time.sleep(1)
-    st.rerun()
+    _components.html(
+        "<script>setTimeout(function(){window.parent.location.reload();},1500);</script>",
+        height=0,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
