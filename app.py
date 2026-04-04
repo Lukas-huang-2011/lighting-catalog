@@ -541,21 +541,21 @@ with st.sidebar:
         "📚 Manage Catalogs",
         "🛠️ Debug & Test"
     ]
-    # Store the active page in session_state so auto-refresh reruns never
-    # reset the radio back to index 0. Redirect requests write here too.
-    if "current_page" not in st.session_state:
-        st.session_state.current_page = _nav_options[0]
+    # Give the radio an explicit key so Streamlit reads its value from
+    # session_state["nav_radio"] on every rerun — auto-refresh reruns
+    # therefore never reset it.  Redirects write to the same key directly
+    # so the widget immediately shows the new page.
+    if "nav_radio" not in st.session_state:
+        st.session_state.nav_radio = _nav_options[0]
     if st.session_state.get("_redirect"):
         if st.session_state._redirect in _nav_options:
-            st.session_state.current_page = st.session_state._redirect
+            st.session_state.nav_radio = st.session_state._redirect
         del st.session_state._redirect
     page = st.radio(
         "Navigation", _nav_options,
-        index=_nav_options.index(st.session_state.current_page),
         key="nav_radio",
         label_visibility="collapsed",
     )
-    st.session_state.current_page = page
     st.divider()
     client = db.get_client()
     catalogs = db.list_pdfs(client)
