@@ -462,6 +462,69 @@ def _trim_whitespace_dim(img: Image.Image, threshold: int = 248) -> Image.Image 
     return cropped if cropped.width > 20 and cropped.height > 20 else None
 
 
+def _is_currency_header_text(text: str, fc: str) -> bool:
+    """
+    Return True if `text` is a table column header indicating prices
+    (as opposed to an inline price like "€149,00").
+
+    Strips the currency marker and common header words; what remains must
+    contain no digits (otherwise it is a price or a product code).
+
+    True examples : "€"  "EUR"  "PRICE EUR"  "List price (€)"  "€/pc"
+    False examples: "€149,00"  "149,00 €"  "1.234"
+    """
+    if not text.strip():
+        return False
+    if not re.search(re.escape(fc), text, re.IGNORECASE):
+        return False
+    remainder = re.sub(re.escape(fc), "", text, flags=re.IGNORECASE)
+    # Remove common surrounding words and punctuation
+    remainder = re.sub(
+        r"(?i)(price|list|netto?|gross|msrp|rrp|per|pc|pcs|unit|stk|prijs|preis)",
+        "", remainder,
+    )
+    remainder = re.sub(r"[/\\()\[\]{}\s|_\-,.:;]", "", remainder)
+    return not re.search(r"\d", remainder)
+
+
+def _find_price_column_headers(page, from_currency: str) -> list:
+    """
+    Scan a page for table column headers that indicate a price column.
+    Returns list of dicts: {'x0', 'x1', 'y_below'} — any number whose
+    x-centre falls in [x0, x1] and whose y is below y_below is a price.
+    """
+    fc = from_currency.strip()
+    raw = page.get_text("dict")
+    price_cols = []
+    seen: set = set()
+    # horizontal tolerance in PDF points (expands the column's detected x-range)
+    TOL = 70
+
+    for block in raw.get("blocks", []):
+        for line in block.get("lines", []):
+            # Check the combined line text first (cheaper)
+            line_text = "".join(s.get("text", "") for s in line.get("spans", []))
+            if not _is_currency_header_text(line_text, fc):
+                continue
+            # Anchor on the span that actually contains the currency marker
+            for span in line.get("spans", []):
+                if not re.search(re.escape(fc), span.get("text", ""), re.IGNORECASE):
+                    continue
+                bbox = span.get("bbox")
+                if not bbox:
+                    continue
+                # De-duplicate on a 10-pt grid
+                key = (round(bbox[0], -1), round(bbox[1], -1))
+                if key in seen:
+                    continue
+                seen.add(key)
+                x_centre = (bbox[0] + bbox[2]) / 2
+                price_cols.append(
+                    {"x0": x_centre - TOL, "x1": x_centre + TOL, "y_below": bbox[3]}
+                )
+    return price_cols
+
+
 def _parse_price(price_str: str) -> float | None:
     """
     Parse a price string that may use comma or dot as decimal separator.
@@ -575,22 +638,48 @@ def _chars_bbox(chars: list, start: int, end: int):
     return r
 
 
+def _span_substr_bbox(span_bbox, span_text: str, start: int, end: int):
+    """
+    Estimate the bounding box of a substring within a span by proportional
+    position.  Used as a fallback when character-level bboxes are unavailable.
+    Returns a fitz.Rect.
+    """
+    if not span_text:
+        return None
+    total_len = len(span_text)
+    if total_len == 0:
+        return None
+    x0, y0, x1, y1 = span_bbox
+    span_w = x1 - x0
+    char_w = span_w / total_len
+    sub_x0 = x0 + start * char_w
+    sub_x1 = x0 + end * char_w
+    return fitz.Rect(sub_x0, y0, sub_x1, y1)
+
+
 def convert_prices(pdf_bytes: bytes, from_currency: str, multiplier: float,
                    to_currency: str) -> bytes:
     """
     Convert every price in a PDF from one currency to another and replace the
     currency label/symbol itself.
 
-    Works at CHARACTER level inside each span, so it correctly handles PDFs
-    where multiple prices and the currency symbol are concatenated into a
-    single text span (a common situation with table-heavy catalogs).
+    Three tiers of price detection, applied to every page:
 
-    Patterns found and replaced inside every span:
-      • Prices with exactly 2 decimal places: 1.188,00 | 335,00 | 1.234,56
-      • The currency marker itself (symbol or label): € | RMB | EUR | USD
-        → replaced by `to_currency`
+    Tier 1 — Decimal prices (always active)
+        Numbers with exactly 2 decimal places anywhere on the page:
+        1.188,00 | 335,00 | 1.234,56 | 149.00
 
-    Numbers with only 1 decimal place (dimensions, weights) are never touched.
+    Tier 2 — Bare integers / thousands-only numbers in price columns (table mode)
+        When a column header contains the currency marker (e.g. "€", "EUR",
+        "PRICE EUR"), every bare number vertically below that header is treated
+        as a price: 149 | 1234 | 14.469  (European thousands separator).
+        Numbers followed by a unit letter (W, K, V, A, m, %, …) are skipped.
+
+    Tier 3 — Bare integers on the same line as a currency symbol
+        If the currency marker appears somewhere on the same text line, bare
+        integers on that line are also converted (handles "€ 149" split-span).
+
+    Currency labels/symbols are replaced with `to_currency` throughout.
     """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     fc  = from_currency.strip()
@@ -599,59 +688,127 @@ def convert_prices(pdf_bytes: bytes, from_currency: str, multiplier: float,
 
     fc_is_symbol = len(fc) <= 2 and not fc.isalpha()
 
-    # Match any price with exactly 2 decimal digits
+    # Tier-1: prices with exactly 2 decimal places
     pat_price = re.compile(
-        r'\d{1,3}(?:[.,]\d{3})*[.,]\d{2}|\d+[.,]\d{2}'
+        r"\d{1,3}(?:[.,]\d{3})*[.,]\d{2}|\d+[.,]\d{2}"
     )
-    # Match the currency marker
+    # Tier-2/3: bare integers or European-thousands numbers (no decimal part).
+    # Requires ≥ 2 digits, must NOT be followed by a unit letter / another
+    # digit / decimal separator + digit  (so "149W", "3000K", "50.5" are safe).
+    pat_bare = re.compile(
+        r"(?<![.\d])(?:\d{1,3}(?:\.\d{3})+|\d{2,6})(?!\d|[.,]\d|[A-Za-z°%])"
+    )
+    # Currency label/symbol
     pat_label = re.compile(esc, re.IGNORECASE)
 
     for page in doc:
         page_text = page.get_text()
 
-        # Skip pages with no trace of this currency (word labels only;
+        # Skip pages with no trace of the currency (word labels only;
         # symbols are tried on every page due to possible encoding issues)
         if not fc_is_symbol and fc.upper() not in page_text.upper():
             continue
+
+        # Find price-column headers (Tier 2)
+        price_cols = _find_price_column_headers(page, fc)
 
         raw        = page.get_text("rawdict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
         redactions = []   # (bbox, new_text, fsize, rgb, fontname, align)
 
         for block in raw.get("blocks", []):
             for line in block.get("lines", []):
-                for span in line.get("spans", []):
+                line_spans = line.get("spans", [])
+                if not line_spans:
+                    continue
+
+                # Does this line contain the currency marker? (Tier 3 trigger)
+                line_text = "".join(s.get("text", "") for s in line_spans)
+                line_has_currency = bool(pat_label.search(line_text))
+
+                for span in line_spans:
                     span_text = span.get("text", "")
                     if not span_text:
                         continue
 
-                    chars    = span.get("chars", [])
-                    fsize    = span.get("size", 10)
-                    flags    = span.get("flags", 0)
-                    c        = span.get("color", 0)
-                    rgb      = ((c >> 16 & 255) / 255,
-                                (c >>  8 & 255) / 255,
-                                (c       & 255) / 255)
-                    fontname = _pick_fontname(flags)
+                    chars     = span.get("chars", [])
+                    fsize     = span.get("size", 10)
+                    flags     = span.get("flags", 0)
+                    c         = span.get("color", 0)
+                    rgb       = ((c >> 16 & 255) / 255,
+                                 (c >>  8 & 255) / 255,
+                                 (c       & 255) / 255)
+                    fontname  = _pick_fontname(flags)
+                    span_bbox = span.get("bbox", None)
 
-                    # ── Find every price number inside this span ──────────────
+                    # Is this span vertically inside a price column? (Tier 2)
+                    span_in_col = False
+                    if span_bbox and price_cols:
+                        sx = (span_bbox[0] + span_bbox[2]) / 2
+                        sy = (span_bbox[1] + span_bbox[3]) / 2
+                        for col in price_cols:
+                            if col["x0"] <= sx <= col["x1"] and sy > col["y_below"]:
+                                span_in_col = True
+                                break
+
+                    # ── Tier 1: decimal prices ────────────────────────────────
+                    already: set = set()   # character positions already claimed
                     for m in pat_price.finditer(span_text):
                         parsed = _parse_price(m.group())
-                        if parsed is None or parsed < 5:
+                        if parsed is None or parsed < 1:
                             continue
                         bbox = _chars_bbox(chars, m.start(), m.end())
+                        if bbox is None and span_bbox:
+                            bbox = _span_substr_bbox(span_bbox, span_text,
+                                                     m.start(), m.end())
                         if bbox is None:
                             continue
-                        new_str = _format_price_num(parsed * multiplier)
+                        already.update(range(m.start(), m.end()))
                         redactions.append(
-                            (bbox, new_str, fsize, rgb, fontname, "right"))
+                            (bbox, _format_price_num(parsed * multiplier),
+                             fsize, rgb, fontname, "right"))
 
-                    # ── Find every currency label/symbol inside this span ─────
+                    # ── Tier 2 / 3: bare integers in price context ────────────
+                    if span_in_col or line_has_currency:
+                        for m in pat_bare.finditer(span_text):
+                            # Skip ranges already covered by a decimal price
+                            if any(i in already for i in range(m.start(), m.end())):
+                                continue
+                            parsed = _parse_price(m.group())
+                            if parsed is None or parsed < 1:
+                                continue
+                            bbox = _chars_bbox(chars, m.start(), m.end())
+                            if bbox is None and span_bbox:
+                                bbox = _span_substr_bbox(span_bbox, span_text,
+                                                         m.start(), m.end())
+                            if bbox is None:
+                                continue
+                            redactions.append(
+                                (bbox, _format_price_num(parsed * multiplier),
+                                 fsize, rgb, fontname, "right"))
+
+                    # ── Currency label / symbol replacement ───────────────────
                     for m in pat_label.finditer(span_text):
                         bbox = _chars_bbox(chars, m.start(), m.end())
+                        if bbox is None and span_bbox:
+                            bbox = _span_substr_bbox(span_bbox, span_text,
+                                                     m.start(), m.end())
                         if bbox is None:
                             continue
-                        redactions.append(
-                            (bbox, tc, fsize, rgb, fontname, "left"))
+                        redactions.append((bbox, tc, fsize, rgb, fontname, "left"))
+
+        # ── Fallback: page.search_for() if rawdict found nothing ─────────────
+        if not redactions:
+            for m in pat_price.finditer(page_text):
+                parsed = _parse_price(m.group())
+                if parsed is None or parsed < 1:
+                    continue
+                for bbox in page.search_for(m.group(), quads=False):
+                    redactions.append(
+                        (bbox, _format_price_num(parsed * multiplier),
+                         10, (0, 0, 0), "Helvetica", "right"))
+            for m in pat_label.finditer(page_text):
+                for bbox in page.search_for(m.group(), quads=False):
+                    redactions.append((bbox, tc, 10, (0, 0, 0), "Helvetica", "left"))
 
         if not redactions:
             continue
@@ -661,10 +818,9 @@ def convert_prices(pdf_bytes: bytes, from_currency: str, multiplier: float,
             page.add_redact_annot(bbox, fill=(1, 1, 1))
         page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
 
-        # 2. Insert converted text at the same character position
+        # 2. Insert converted text at the same positions
         for bbox, new_text, fsize, rgb, fontname, align in redactions:
-            _insert_fitted(page, bbox, new_text, fsize, rgb, fontname,
-                           align=align)
+            _insert_fitted(page, bbox, new_text, fsize, rgb, fontname, align=align)
 
     buf = io.BytesIO()
     doc.save(buf, garbage=4, deflate=True)
