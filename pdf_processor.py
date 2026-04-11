@@ -765,18 +765,26 @@ def convert_prices(pdf_bytes: bytes, from_currency: str, multiplier: float,
     fc_is_symbol = len(fc) <= 2 and not fc.isalpha()
 
     # ── Patterns ─────────────────────────────────────────────────────────────
-    _DEC  = r"\d{1,3}(?:[.,]\d{3})*[.,]\d{2}|\d+[.,]\d{2}"
-    _BARE = r"(?:\d{1,3}(?:\.\d{3})+|\d{2,6})"
+    # _DEC: prices with an explicit decimal separator and exactly 2 decimal
+    # digits.  The (?!\d) at the end prevents partial matching — e.g. without
+    # it, "1.245" (European thousands for 1 245) would be grabbed as "1.24".
+    _DEC  = r"(?:\d{1,3}(?:[.,]\d{3})*[.,]\d{2}|\d+[.,]\d{2})(?!\d)"
+    # _BARE: integers that may use dot-thousands (1.245) or are 1–6 digits.
+    # Single-digit prices are included (changed from \d{2,6} to \d{1,6}).
+    _BARE = r"(?:\d{1,3}(?:\.\d{3})+|\d{1,6})"
 
     # A: combined units (group 1 always captures the numeric part)
+    # IMPORTANT: bare patterns run BEFORE decimal patterns so that European
+    # thousands-only prices like "€ 1.245" are captured as 1245 (bare) and
+    # NOT as 1.24 (decimal).
+    pat_pfx_bare = re.compile(esc + r"\s*(" + _BARE + r")(?!\d|[.,]\d|[A-Za-z°%])",    re.IGNORECASE)
+    pat_sfx_bare = re.compile(r"(?<![.,\d])(" + _BARE + r")(?!\d|[.,]\d|[A-Za-z°%])\s*" + esc, re.IGNORECASE)
     pat_pfx_dec  = re.compile(esc + r"\s*(" + _DEC  + r")",                             re.IGNORECASE)
     pat_sfx_dec  = re.compile(r"(" + _DEC  + r")\s*" + esc,                             re.IGNORECASE)
-    pat_pfx_bare = re.compile(esc + r"\s*(" + _BARE + r")(?!\d|[.,]\d|[A-Za-z°%])",    re.IGNORECASE)
-    pat_sfx_bare = re.compile(r"(?<![.\d])(" + _BARE + r")(?!\d|[.,]\d|[A-Za-z°%])\s*" + esc, re.IGNORECASE)
     # B: standalone decimal
     pat_price = re.compile(_DEC)
     # C: standalone bare
-    pat_bare  = re.compile(r"(?<![.\d])" + _BARE + r"(?!\d|[.,]\d|[A-Za-z°%])")
+    pat_bare  = re.compile(r"(?<![.,\d])" + _BARE + r"(?!\d|[.,]\d|[A-Za-z°%])")
     # D: standalone label
     pat_label = re.compile(esc, re.IGNORECASE)
 
@@ -855,11 +863,15 @@ def convert_prices(pdf_bytes: bytes, from_currency: str, multiplier: float,
 
                 # ── A: combined currency+price — run on FULL LINE TEXT ────────
                 # This catches cross-span pairs like [span:"€"][span:"149,00"].
+                # Bare patterns run first: European catalogs commonly use
+                # integer prices (€ 255) or dot-thousands (€ 1.245) without
+                # decimals.  Running decimal patterns first would partially
+                # eat thousands numbers (matching "1.24" from "1.245").
                 for pat, order in (
-                    (pat_pfx_dec,  "prefix"),
-                    (pat_sfx_dec,  "suffix"),
                     (pat_pfx_bare, "prefix"),
                     (pat_sfx_bare, "suffix"),
+                    (pat_pfx_dec,  "prefix"),
+                    (pat_sfx_dec,  "suffix"),
                 ):
                     for m in pat.finditer(line_text):
                         if any(i in line_claimed for i in range(m.start(), m.end())):
@@ -920,11 +932,29 @@ def convert_prices(pdf_bytes: bytes, from_currency: str, multiplier: float,
                              fsize, rgb, fontname, "right"))
 
                     # C: bare integers in price context
+                    # Only match when the span is in a detected price column.
+                    # When using line_has_currency, require the bare number to
+                    # be ADJACENT to the currency symbol (within 80 chars in
+                    # the line text) to avoid converting product codes like
+                    # "7601" that happen to be on a line with "€".
                     if span_in_col or line_has_currency:
                         for m in pat_bare.finditer(span_text):
                             lstart, lend = sm_start + m.start(), sm_start + m.end()
                             if any(i in line_claimed for i in range(lstart, lend)):
                                 continue
+                            # If NOT in a price column, check proximity to
+                            # the currency symbol in the line text to avoid
+                            # converting product codes.
+                            if not span_in_col and line_has_currency:
+                                # Find nearest currency symbol in line
+                                nearest_curr = None
+                                for cm in pat_label.finditer(line_text):
+                                    dist = min(abs(lstart - cm.end()),
+                                               abs(lend - cm.start()))
+                                    if nearest_curr is None or dist < nearest_curr:
+                                        nearest_curr = dist
+                                if nearest_curr is None or nearest_curr > 3:
+                                    continue
                             parsed = _parse_price(m.group())
                             if parsed is None or parsed < 1:
                                 continue
